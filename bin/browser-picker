@@ -1,0 +1,183 @@
+#!/bin/bash
+# browser-picker — the executable behind the .desktop file.
+#
+# Registered as the default web browser, so this is what xdg-open runs for
+# every clicked link and what omarchy-launch-browser runs for SUPER+SHIFT+B.
+# It owns none of the decisions: it hands the request to the plugin inside
+# omarchy-shell and launches whatever comes back.
+#
+#   browser-picker [flags] [url ...]
+#   browser-picker --list-targets     print the menu, open nothing
+#   browser-picker --set-default      register this as the default browser
+#
+# The picker itself lives in Picker.qml. This stays a shim so that the one
+# thing that must never break — opening a link — has as little logic in it as
+# possible.
+
+set -uo pipefail
+
+PLUGIN_ID="k53n0.browser-picker"
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCAN="$HERE/browser-picker-scan"
+DESKTOP_ID="browser-picker.desktop"
+
+# --- Arguments --------------------------------------------------------------
+# omarchy-launch-browser probes the default browser with `--help` and greps the
+# output for MOZ_LOG to decide which private-browsing flag to pass. Answering
+# that probe with a menu would hang the keybind, so it gets silence and a
+# clean exit. This is load-bearing: do not make --help print usage.
+urls=() ; flags=() ; action=""
+for argument in "$@"; do
+  case "$argument" in
+    -h|--help|--version)  exit 0 ;;
+    --list-targets)       action="list" ;;
+    --set-default)        action="set-default" ;;
+    --private)            flags+=("--incognito") ;;
+    -*)                   flags+=("$argument") ;;
+    *)                    urls+=("$argument") ;;
+  esac
+done
+
+die() {
+  command -v notify-send >/dev/null && notify-send "browser-picker" "$1"
+  echo "browser-picker: $1" >&2
+  exit 1
+}
+
+case "$action" in
+  list)
+    "$SCAN" | jq -r '.entries[] | .label'
+    exit 0
+    ;;
+  set-default)
+    applications="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    mkdir -p "$applications"
+    # Copied, not symlinked: omarchy-plugin-validate refuses a symlink anywhere
+    # inside a plugin folder, and a link pointing back into the plugin would
+    # break the moment the plugin is removed.
+    sed "s|@EXEC@|$HERE/browser-picker|" "$HERE/../applications/$DESKTOP_ID" \
+      >"$applications/$DESKTOP_ID" || die "could not write $applications/$DESKTOP_ID"
+    command -v update-desktop-database >/dev/null && update-desktop-database "$applications" 2>/dev/null
+    # Omarchy exports BROWSER=omarchy-launch-browser, and xdg-settings refuses
+    # to touch the default while BROWSER is set. Dropping it for this one call
+    # is what omarchy-launch-browser itself does to read the value back.
+    env -u BROWSER xdg-settings set default-web-browser "$DESKTOP_ID" \
+      || die "xdg-settings refused $DESKTOP_ID"
+    echo "browser-picker is now the default browser"
+    exit 0
+    ;;
+esac
+
+# --- The normal path: ask the plugin ----------------------------------------
+# Every decision (routing rules, ranking, whether to show anything at all) is
+# made in Picker.qml, so there is exactly one implementation of each. What
+# comes back is a ready-to-run argv, NUL-separated, which sidesteps every
+# quoting question a camera-shaped profile name could raise.
+shell_is_up() {
+  command -v omarchy-shell >/dev/null || return 1
+  timeout 1 omarchy-shell shell ping >/dev/null 2>&1
+}
+
+run_argv() { # argv on stdin, NUL-separated
+  local argv=()
+  mapfile -t -d '' argv <"$1"
+  # A cancelled picker writes nothing. That is a choice, not a failure.
+  [[ ${#argv[@]} -gt 0 && -n ${argv[0]} ]] || exit 0
+  exec uwsm-app -- "${argv[@]}"
+}
+
+ask_plugin() {
+  local selection done_file payload waited
+  selection=$(mktemp -t browser-picker-selection.XXXXXX) || return 1
+  done_file=$(mktemp -t browser-picker-done.XXXXXX) || return 1
+  # The done file must not exist yet: its appearance is the signal.
+  rm -f "$done_file"
+
+  payload=$(jq -nc \
+    --arg selectionFile "$selection" \
+    --arg doneFile "$done_file" \
+    --args '{selectionFile: $selectionFile, doneFile: $doneFile, urls: $ARGS.positional}' \
+    -- ${urls+"${urls[@]}"}) || return 1
+  payload=$(jq -c --args '. + {flags: $ARGS.positional}' \
+    -- ${flags+"${flags[@]}"} <<<"$payload") || return 1
+
+  omarchy-shell shell summon "$PLUGIN_ID" "$payload" >/dev/null 2>&1 || {
+    rm -f "$selection"
+    return 1
+  }
+
+  # Poll rather than inotifywait: no extra dependency, and 20ms is well under
+  # the threshold where a person notices. The cap is generous because the user
+  # may be reading the list, but finite so a wedged shell cannot leave an
+  # invisible process holding a link forever.
+  waited=0
+  while [[ ! -e $done_file ]]; do
+    sleep 0.02
+    waited=$((waited + 1))
+    if (( waited > 15000 )); then   # 5 minutes
+      rm -f "$selection" "$done_file"
+      return 1
+    fi
+  done
+
+  run_argv "$selection"
+}
+
+# --- Fallback: fzf in a floating foot ---------------------------------------
+# Only when omarchy-shell is not answering — a crash, a restart, a login where
+# the shell has not come up yet. The default browser is the worst thing to have
+# broken, so there is always a second way through. This path is deliberately
+# dumb: no ranking, no rules, no learning.
+fallback_pick() {
+  local scan labels choice line bin family profile manage argv=()
+  command -v fzf >/dev/null || die "omarchy-shell is not running and fzf is not installed"
+
+  scan=$("$SCAN") || die "could not list browsers"
+  labels=$(jq -r '.entries[] | [.label, .bin, .family, .profile, (.manage|tostring)] | @tsv' <<<"$scan")
+  [[ -n $labels ]] || die "no browsers found"
+
+  local input output prompt
+  input=$(mktemp) ; output=$(mktemp)
+  cut -f1 <<<"$labels" >"$input"
+  prompt="Open with"
+  [[ ${#urls[@]} -gt 0 ]] && prompt="${urls[0]}"
+
+  BP_IN="$input" BP_OUT="$output" BP_PROMPT="$prompt" \
+    foot --app-id=browser-picker --title="browser-picker" \
+      sh -c 'fzf --prompt="$BP_PROMPT ❯ " --layout=reverse --border=none \
+                 --info=inline --cycle --height=100% <"$BP_IN" >"$BP_OUT"' \
+      >/dev/null 2>&1
+  choice=$(<"$output")
+  rm -f "$input" "$output"
+  [[ -n $choice ]] || exit 0
+
+  line=$(grep -F -m1 "$choice"$'\t' <<<"$labels") || exit 0
+  IFS=$'\t' read -r _ bin family profile manage <<<"$line"
+
+  argv=("$bin")
+  if [[ -n $profile ]]; then
+    if [[ $family == firefox ]]; then argv+=("-P" "$profile")
+    else argv+=("--profile-directory=$profile") ; fi
+  fi
+  for flag in ${flags+"${flags[@]}"}; do
+    if [[ $family == firefox && ( $flag == "--incognito" || $flag == "--inprivate" ) ]]; then
+      argv+=("--private-window")
+    else
+      argv+=("$flag")
+    fi
+  done
+  if [[ $manage == true ]]; then
+    [[ $family == firefox ]] && argv+=("about:profiles") || argv+=("chrome://profile-picker")
+  else
+    argv+=(${urls+"${urls[@]}"})
+  fi
+
+  exec uwsm-app -- "${argv[@]}"
+}
+
+command -v jq >/dev/null || die "jq is not installed"
+
+if shell_is_up && ask_plugin; then
+  exit 0
+fi
+fallback_pick

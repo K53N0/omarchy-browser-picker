@@ -1,0 +1,195 @@
+#!/bin/bash
+# browser-picker-scan — list every installed browser and profile as JSON.
+#
+# Printed on stdout for the QML overlay and the fzf fallback to consume, so
+# neither has to know how a browser stores its profiles.
+#
+#   { "entries": [ { "id", "label", "browser", "family", "bin",
+#                    "profile", "icon", "manage" }, ... ] }
+#
+# `id` is the stable key used for frecency and routing rules, so it must not
+# change between runs: it is "<bin>:<profile-dir>", never the display name,
+# which the user can rename at any time.
+#
+# jq only, no python: jq is already required by omarchy's own plugin tooling,
+# so this adds no dependency that a working `omarchy plugin` command does not
+# already imply.
+
+set -uo pipefail
+
+command -v jq >/dev/null || { echo '{"entries":[],"error":"jq is not installed"}'; exit 1; }
+
+entries=()
+
+# JSON string escaping for values that come from disk. A profile named
+# `He said "hi"` is not exotic, and an unescaped quote would produce a payload
+# the QML side silently fails to parse.
+esc() {
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\t'/ }
+  s=${s//$'\n'/ }
+  s=${s//$'\r'/}
+  printf '%s' "$s"
+}
+
+# Two profiles can carry the same name — a person with the same account added
+# to a browser twice ends up with two rows reading identically, and no way to
+# tell which is which. The id stays as it was, so rules and rankings are
+# unaffected; only what is shown gets a counter.
+declare -A LABEL_SEEN
+
+# Writes to UNIQUE_LABEL rather than printing: a command substitution would run
+# this in a subshell, where LABEL_SEEN is updated and then thrown away, and
+# every duplicate would sail through looking unique.
+UNIQUE_LABEL=""
+unique_label() {
+  local label="$1" base="$1" n=1
+  while [[ -n ${LABEL_SEEN[$label]+x} ]]; do
+    n=$((n + 1))
+    label="$base ($n)"
+  done
+  LABEL_SEEN[$label]=1
+  UNIQUE_LABEL="$label"
+}
+
+emit() { # id label browser family bin profile icon manage generic
+  local label
+  unique_label "$2"
+  label="$UNIQUE_LABEL"
+  entries+=("$(printf '{"id":"%s","label":"%s","browser":"%s","family":"%s","bin":"%s","profile":"%s","icon":"%s","manage":%s,"generic":%s}' \
+    "$(esc "$1")" "$(esc "$label")" "$(esc "$3")" "$(esc "$4")" \
+    "$(esc "$5")" "$(esc "$6")" "$(esc "$7")" "$8" "${9:-false}")")
+}
+
+# --- Chromium family --------------------------------------------------------
+# Profiles live in "<config-dir>/Local State" under profile.info_cache, keyed by
+# the on-disk directory name. The directory is what --profile-directory wants;
+# the name is only ever shown.
+#
+# bin | config-dir under ~/.config | display name | icon
+CHROMIUM_BROWSERS=(
+  "google-chrome-stable|google-chrome|Chrome|🌐"
+  "chromium|chromium|Chromium|🧪"
+  "brave|BraveSoftware/Brave-Browser|Brave|🦁"
+  "brave-browser|BraveSoftware/Brave-Browser|Brave|🦁"
+  "vivaldi-stable|vivaldi|Vivaldi|🎻"
+  "microsoft-edge-stable|microsoft-edge|Edge|🌊"
+  "opera|opera|Opera|🎭"
+  "helium|helium|Helium|🎈"
+  "ungoogled-chromium|chromium|Ungoogled Chromium|🕶"
+  "thorium-browser|thorium|Thorium|⚡"
+)
+
+seen_config=""
+scan_chromium() {
+  local bin=$1 dir=$2 name=$3 icon=$4
+  command -v "$bin" >/dev/null || return 0
+
+  # Two binaries can share one config dir (brave / brave-browser, chromium /
+  # ungoogled-chromium). Listing both would show every profile twice.
+  case "$seen_config" in *"|$dir|"*) return 0 ;; esac
+  seen_config="$seen_config|$dir|"
+
+  local state="$HOME/.config/$dir/Local State" rows=() row
+  if [[ -r $state ]]; then
+    mapfile -t rows < <(jq -r '
+      def display: if ((.value.name // "") | length) == 0 then .key else .value.name end;
+      (.profile.info_cache // {})
+      | to_entries
+      | sort_by(display | ascii_downcase)
+      | .[]
+      | [.key, display]
+      | @tsv
+    ' "$state" 2>/dev/null)
+  fi
+
+  # Counted before emitting, because a browser you can only open one way is
+  # generic: picking "the browser" and picking "its only profile" are the same
+  # act, and it belongs with the plain entries rather than buried among
+  # eighteen named ones.
+  local generic=false
+  (( ${#rows[@]} <= 1 )) && generic=true
+
+  for row in ${rows+"${rows[@]}"}; do
+    IFS=$'\t' read -r profile_dir profile_name <<<"$row"
+    [[ -n $profile_dir ]] || continue
+    emit "$bin:$profile_dir" "$icon  $name — $profile_name" \
+      "$name" chromium "$bin" "$profile_dir" "$icon" false "$generic"
+  done
+
+  # An unreadable or profile-less install still deserves one plain entry:
+  # a browser you cannot launch at all is worse than one without profile names.
+  (( ${#rows[@]} )) || emit "$bin:" "$icon  $name" "$name" chromium "$bin" "" "$icon" false true
+
+  emit "$bin:__manage__" "➕  $name — manage profiles" "$name" chromium "$bin" "" "$icon" true false
+}
+
+# --- Firefox family ---------------------------------------------------------
+# profiles.ini is INI: [ProfileN] sections with Name= and Path=. Launching uses
+# -P <name>, so the name is what gets stored, not the path.
+#
+# bin | dir under ~ | display name | icon
+FIREFOX_BROWSERS=(
+  "firefox|.mozilla/firefox|Firefox|🦊"
+  "zen-browser|.zen|Zen|🧘"
+  "librewolf|.librewolf|LibreWolf|🐺"
+  "floorp|.floorp|Floorp|🏢"
+  "waterfox|.waterfox|Waterfox|💧"
+)
+
+scan_firefox() {
+  local bin=$1 dir=$2 name=$3 icon=$4
+  command -v "$bin" >/dev/null || return 0
+
+  local ini="$HOME/$dir/profiles.ini" names=() profile_name=""
+  if [[ -r $ini ]]; then
+    local in_profile=0
+    while IFS= read -r line || [[ -n $line ]]; do
+      line=${line%$'\r'}
+      case "$line" in
+        \[Profile*\])
+          # A new section closes the previous one: keep what we collected.
+          [[ -n $profile_name ]] && names+=("$profile_name")
+          in_profile=1 ; profile_name="" ;;
+        \[*\])
+          [[ -n $profile_name ]] && names+=("$profile_name")
+          in_profile=0 ; profile_name="" ;;
+        Name=*)
+          [[ $in_profile -eq 1 ]] && profile_name=${line#Name=} ;;
+      esac
+    done < "$ini"
+    [[ -n $profile_name ]] && names+=("$profile_name")
+  fi
+
+  local generic=false
+  (( ${#names[@]} <= 1 )) && generic=true
+
+  for profile_name in ${names+"${names[@]}"}; do
+    emit "$bin:$profile_name" "$icon  $name — $profile_name" \
+      "$name" firefox "$bin" "$profile_name" "$icon" false "$generic"
+  done
+
+  (( ${#names[@]} )) || emit "$bin:" "$icon  $name" "$name" firefox "$bin" "" "$icon" false true
+
+  emit "$bin:__manage__" "➕  $name — manage profiles" "$name" firefox "$bin" "" "$icon" true false
+}
+
+for spec in "${CHROMIUM_BROWSERS[@]}"; do
+  IFS='|' read -r bin dir name icon <<<"$spec"
+  scan_chromium "$bin" "$dir" "$name" "$icon"
+done
+
+for spec in "${FIREFOX_BROWSERS[@]}"; do
+  IFS='|' read -r bin dir name icon <<<"$spec"
+  scan_firefox "$bin" "$dir" "$name" "$icon"
+done
+
+printf '{"entries":['
+first=1
+for entry in ${entries+"${entries[@]}"}; do
+  [[ $first -eq 1 ]] || printf ','
+  printf '%s' "$entry"
+  first=0
+done
+printf ']}\n'

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Browser Picker
+GenericName=Web Browser
+Comment=Choose the browser and profile for each link
+Exec=@EXEC@ %U
+Terminal=false
+Icon=web-browser
+Categories=Network;WebBrowser;
+MimeType=x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/about;x-scheme-handler/unknown;text/html;
+StartupNotify=true

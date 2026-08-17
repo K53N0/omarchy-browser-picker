@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "k53n0.browser-picker",
+  "name": "Browser Picker",
+  "version": "1.0.0",
+  "author": "K53N0",
+  "license": "MIT",
+  "description": "Choose the browser and profile for every link, with per-site rules that learn from what you pick.",
+  "kinds": [
+    "overlay",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Picker.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Browser Picker",
+    "description": "Per-site browser and profile routing. The bar entry holds the rules and the default-browser switch; the picker itself appears whenever you open a link.",
+    "category": "Productivity",
+    "aliases": [
+      "browser",
+      "profile",
+      "picker",
+      "chrome",
+      "firefox"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
