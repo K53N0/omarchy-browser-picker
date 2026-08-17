@@ -9,14 +9,24 @@ _Screenshots use invented profile names._
 
 ## Why
 
-One browser profile per client, per project, per identity is normal now, and
-nothing on the desktop knows about it. A link from Slack lands in whichever
-profile the browser happened to have open, and moving it means copying the URL
-into the right window by hand.
+Running several browser profiles is normal now — one per client, per project,
+per identity — and nothing outside the browser knows they exist. Every
+application that opens a link just asks the system for "a browser", and the URL
+lands in whichever window happened to be in front.
 
-This makes that choice explicit and then learns it. Pick the work profile for
-`atlassian.net` three times and the picker offers to remember; after that the
-link just opens where it belongs.
+Terminals are where this hurts most, because a link reaches them with no context
+at all. Ctrl-click a URL in your shell, in a test runner's output, in an agent
+like Claude Code, and all that travels is the URL itself: no account, no
+project, no hint of which of your identities it belongs to. So the pull request
+from a work repository opens in the personal profile, signed into the wrong
+account, and you move it across by hand. The same happens with chat clients,
+mail, PDF readers, and desktop notifications.
+
+The decision has to be made somewhere, and the only place that sees every link
+is the default browser slot itself. Browser Picker takes that slot. The first
+time a site comes up it asks; after that it remembers. Pick the work profile for
+`atlassian.net` three times and it offers to make that permanent, and from then
+on the link opens where it belongs without asking again.
 
 ## Install
 
