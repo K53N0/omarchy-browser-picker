@@ -73,7 +73,8 @@ A rule sends one site to one profile without asking. They accumulate three ways:
 - **Learned.** After the same site goes to the same profile three times, the
   footer offers `Ctrl+Enter` to make it permanent. Nothing is written until you
   press it.
-- **By hand.** Edit `~/.config/omarchy/browser-picker.json`.
+- **Added by hand.** From the bar entry or the rules window below — no need to
+  touch a file.
 - **Imported.** A `~/.config/browser-chooser/rules` file from the bash chooser
   this replaces is read once, on first run, if you have no rules yet.
 
@@ -81,10 +82,18 @@ A bare domain covers its subdomains, so `example.com` also matches
 `portal.example.com`. Write `*.example.com` to match the subdomains only. The
 most specific rule wins regardless of the order they appear in.
 
-Every rule, learned or hand-written, is listed in the bar entry with a `✕` next
-to it. **Apply rules automatically** turns the whole mechanism back into
-ranking hints, which is the gentler way to live with rules you are not sure
-about yet.
+The bar entry shows your most recent rules and a toggle to apply them
+automatically:
+
+![Bar panel with settings and recent rules](docs/bar-panel.png)
+
+Past a few rules, **View all N rules** opens a dedicated window. Every site
+and profile is editable in place — click a profile to reassign it, type over a
+site to rename it, `✕` to remove it, or add a brand new rule at the bottom.
+A rule pointing at a profile that no longer exists is called out instead of
+showing a raw id:
+
+![The full rules window, editable](docs/rules-editor.png)
 
 ## Ranking
 

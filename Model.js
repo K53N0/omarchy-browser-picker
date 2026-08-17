@@ -146,6 +146,17 @@ function matchRule(rules, host) {
   return best
 }
 
+// Rules matching a typed query, by pattern or by the profile they point at.
+// The full rules window needs it once the list outgrows a glance.
+function filterRules(rules, query) {
+  var needle = stringValue(query).trim().toLowerCase()
+  if (!needle) return rules || []
+  return (rules || []).filter(function (rule) {
+    return rule.pattern.indexOf(needle) >= 0
+      || stringValue(rule.entryId).toLowerCase().indexOf(needle) >= 0
+  })
+}
+
 function removeRule(rules, pattern) {
   var needle = stringValue(pattern).trim().toLowerCase()
   return (rules || []).filter(function (rule) { return rule.pattern !== needle })
@@ -420,6 +431,7 @@ if (typeof module !== "undefined" && module.exports) {
     matchRule: matchRule,
     upsertRule: upsertRule,
     removeRule: removeRule,
+    filterRules: filterRules,
     parseState: parseState,
     serializeState: serializeState,
     decayedScore: decayedScore,

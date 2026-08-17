@@ -10,6 +10,7 @@
 // profile called `He said "hi"` crosses it unharmed.
 
 import QtQuick
+import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
@@ -81,6 +82,11 @@ Item {
   function open(payload) {
     var request = {}
     try { request = JSON.parse(String(payload || "")) || {} } catch (e) { request = {} }
+
+    // The bar asks for the rules window through the same summon entry point.
+    // Handled before anything else touches the pending request: a shim waiting
+    // on a link must not be released because someone opened a settings screen.
+    if (request.view === "rules") { openRules(); return }
 
     // A second summon while one is pending would strand the first caller's
     // shim polling a done file nobody will ever touch. Release it first.
@@ -165,7 +171,48 @@ Item {
   // Without it the window would stay up and, worse, the shim that summoned us
   // would poll a done file nobody is ever going to touch. Closing for any
   // reason has to release the caller.
-  function close() { cancel() }
+  function close() { if (rulesOpen) closeRules(); else cancel() }
+
+  // ---------------------------------------------------------- rules window
+
+  property bool rulesOpen: false
+  property string rulesFilter: ""
+  readonly property var visibleRules: Model.filterRules(config.rules, rulesFilter)
+
+  function openRules() {
+    rulesFilter = ""
+    // The target picker lists profiles, and this entry point skips the link
+    // path that normally fills them in — without this the dropdowns open on
+    // an empty list and every rule shows a raw id instead of a profile name.
+    if (entries.length === 0) scan()
+    targetScreen = focusedScreen()
+    rulesOpen = true
+    Qt.callLater(function () { rulesFilterField.forceActiveFocus() })
+  }
+
+  function closeRules() {
+    rulesOpen = false
+    rulesFilter = ""
+  }
+
+  // A rule the user typed is no longer a learned one, so the flag is dropped:
+  // "learned" means the picker offered it, and after a hand edit that is no
+  // longer the story the list should tell.
+  function applyRule(oldPattern, newPattern, entryId) {
+    var next = config.rules
+    if (oldPattern && oldPattern !== newPattern) next = Model.removeRule(next, oldPattern)
+    next = Model.upsertRule(next, newPattern, entryId, false)
+    config = Model.parseConfig(JSON.stringify({ settings: config.settings, rules: next }))
+    configFile.setText(Model.serializeConfig(config))
+  }
+
+  function removeRule(pattern) {
+    config = Model.parseConfig(JSON.stringify({
+      settings: config.settings,
+      rules: Model.removeRule(config.rules, pattern)
+    }))
+    configFile.setText(Model.serializeConfig(config))
+  }
 
   // One bash call writes the argv and releases the caller, in that order, so
   // the shim can never observe a done file next to a half-written selection.
@@ -485,6 +532,122 @@ Item {
           ? "↵ open   ·   Ctrl+↵ always open " + root.host + " here"
           : "↵ open   ·   ↑↓ move   ·   esc cancel"
         color: root.offersRule ? Color.accent : Color.muted
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+      }
+    }
+  }
+
+  // The full rules list, opened from the bar entry. A separate window rather
+  // than a taller popup: once there are more rules than fit at a glance, the
+  // popup would have to scroll a list that sits under the settings it belongs
+  // to, and neither would be comfortable.
+  PanelWindow {
+    id: rulesWindow
+
+    screen: root.targetScreen
+    visible: root.rulesOpen
+    anchors { top: true; bottom: true; left: true; right: true }
+    color: "transparent"
+    WlrLayershell.namespace: "browser-picker-rules"
+    WlrLayershell.layer: WlrLayer.Overlay
+    WlrLayershell.keyboardFocus: root.rulesOpen ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+    exclusionMode: ExclusionMode.Ignore
+
+    Rectangle {
+      anchors.fill: parent
+      color: Color.menu.scrim
+      MouseArea { anchors.fill: parent; onClicked: root.closeRules() }
+    }
+
+    Rectangle {
+      anchors.centerIn: parent
+      width: Math.min(parent.width - Style.space(80), Style.space(620))
+      height: Math.min(parent.height - Style.space(120),
+                       rulesList.contentHeight + rulesHeader.height
+                       + rulesFilterField.height + rulesLegend.height + Style.space(60))
+      radius: Style.cornerRadius
+      color: Color.menu.background
+      border.width: Style.spacing.hairline
+      border.color: Color.menu.border
+
+      MouseArea { anchors.fill: parent }
+
+      Text {
+        id: rulesHeader
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.margins: Style.space(14)
+        text: root.config.rules.length === 1
+          ? "1 browser routing rule"
+          : root.config.rules.length + " browser routing rules"
+        color: Color.menu.text
+        font.family: Style.font.family
+        font.pixelSize: Style.font.title
+        elide: Text.ElideRight
+      }
+
+      TextField {
+        id: rulesFilterField
+        anchors.top: rulesHeader.bottom
+        anchors.topMargin: Style.space(8)
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.leftMargin: Style.space(14)
+        anchors.rightMargin: Style.space(14)
+        placeholderText: "Filter by site or profile"
+        foreground: Color.menu.text
+        font.family: Style.font.family
+        onTextChanged: root.rulesFilter = text
+        Keys.onPressed: function (event) {
+          if (event.key === Qt.Key_Escape) { root.closeRules(); event.accepted = true }
+        }
+      }
+
+      Flickable {
+        id: rulesList
+        anchors.top: rulesFilterField.bottom
+        anchors.topMargin: Style.space(8)
+        anchors.bottom: rulesLegend.top
+        anchors.bottomMargin: Style.space(8)
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.leftMargin: Style.space(14)
+        anchors.rightMargin: Style.space(14)
+        clip: true
+        contentWidth: width
+        contentHeight: rulesColumn.implicitHeight
+        boundsBehavior: Flickable.StopAtBounds
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        RulesView {
+          id: rulesColumn
+          width: rulesList.width
+          editable: true
+          entries: root.entries
+          rules: root.visibleRules
+          foreground: Color.menu.text
+          dim: Color.muted
+          fontFamily: Style.font.family
+          onRemoved: function (pattern) { root.removeRule(pattern) }
+          onChanged: function (oldPattern, newPattern, entryId) {
+            root.applyRule(oldPattern, newPattern, entryId)
+          }
+          onEscaped: root.closeRules()
+        }
+      }
+
+      Text {
+        id: rulesLegend
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.margins: Style.space(14)
+        text: "edit a site or profile in place   ·   ✕ removes   ·   esc closes"
+        color: Color.muted
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight

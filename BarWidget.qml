@@ -57,6 +57,13 @@ BarWidget {
     configFile.setText(Model.serializeConfig(config))
   }
 
+  function openAllRules() {
+    var host = root.bar ? root.bar.shell : null
+    if (!host || typeof host.summon !== "function") return
+    card.open = false
+    host.summon(root.moduleName, JSON.stringify({ view: "rules" }))
+  }
+
   function launchPicker() {
     Quickshell.execDetached([root.shimPath])
     card.open = false
@@ -254,12 +261,26 @@ BarWidget {
         }
 
         RulesView {
+          id: rulesPreview
           width: parent.width
+          // Only a glance here. More than a few rules and the settings above
+          // them start scrolling out of reach, so the rest lives in a window
+          // of its own.
+          limit: 3
           rules: root.config.rules
           foreground: card.fg
           dim: card.dim
           fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
           onRemoved: function (pattern) { root.removeRule(pattern) }
+        }
+
+        Button {
+          visible: rulesPreview.hiddenCount > 0
+          text: "View all " + root.config.rules.length + " rules"
+          bordered: true
+          foreground: card.fg
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          onClicked: root.openAllRules()
         }
       }
     }
