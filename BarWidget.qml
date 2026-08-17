@@ -275,8 +275,15 @@ BarWidget {
         }
 
         Button {
-          visible: rulesPreview.hiddenCount > 0
-          text: "View all " + root.config.rules.length + " rules"
+          // Always offered, not only once the preview overflows: with no rules
+          // yet this is the way in to add the first one by hand, and hiding the
+          // only door to the editor until you already have three rules is
+          // exactly backwards.
+          text: root.config.rules.length === 0
+            ? "Add a rule"
+            : (root.config.rules.length === 1
+                ? "View 1 rule"
+                : "View all " + root.config.rules.length + " rules")
           bordered: true
           foreground: card.fg
           fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
