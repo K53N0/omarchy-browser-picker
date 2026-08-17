@@ -6,6 +6,7 @@
 // business of becoming the default browser.
 
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
@@ -128,123 +129,138 @@ BarWidget {
     bar: root.bar
     owner: root
     contentWidth: Style.space(380)
-    contentHeight: Style.space(440)
+    // Sized to its content rather than a fixed height: the rules list grows,
+    // and a fixed card simply clipped it — the rules were unreachable. The cap
+    // stops a long list from filling the screen, and the flick below scrolls it.
+    contentHeight: card.fittedContentHeight(column.implicitHeight, Style.space(620))
 
     readonly property color fg: root.bar ? root.bar.foreground : Color.foreground
     readonly property color dim: Color.muted
 
-    Column {
+    Flickable {
       anchors.fill: parent
-      spacing: Style.space(10)
+      contentWidth: width
+      contentHeight: column.implicitHeight
+      clip: true
+      boundsBehavior: Flickable.StopAtBounds
+      flickableDirection: Flickable.VerticalFlick
+      interactive: contentHeight > height
+      ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-      Text {
-        width: parent.width
-        text: "Browser picker"
-        color: card.fg
-        font.family: root.bar ? root.bar.fontFamily : Style.font.family
-        font.pixelSize: Style.font.title
-        elide: Text.ElideRight
-      }
-
-      // Until this is the default browser the plugin does nothing for clicked
-      // links, which is most of what it is for — so it leads, and disappears
-      // once it is done.
       Column {
+        id: column
         width: parent.width
-        spacing: Style.space(6)
-        visible: !root.isDefault
+        spacing: Style.space(10)
 
         Text {
           width: parent.width
-          wrapMode: Text.WordWrap
-          text: "Links still open in " + (root.defaultBrowser || "another browser")
-            + ". Make this the default to route them through the picker."
-          color: card.dim
+          text: "Browser picker"
+          color: card.fg
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Style.font.caption
+          font.pixelSize: Style.font.title
+          elide: Text.ElideRight
+        }
+
+        // Until this is the default browser the plugin does nothing for clicked
+        // links, which is most of what it is for — so it leads, and disappears
+        // once it is done.
+        Column {
+          width: parent.width
+          spacing: Style.space(6)
+          visible: !root.isDefault
+
+          Text {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: "Links still open in " + (root.defaultBrowser || "another browser")
+              + ". Make this the default to route them through the picker."
+            color: card.dim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
+          Button {
+            text: "Set as default browser"
+            bordered: true
+            foreground: card.fg
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            onClicked: root.makeDefault()
+          }
         }
 
         Button {
-          text: "Set as default browser"
+          text: "Open a browser"
           bordered: true
           foreground: card.fg
           fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-          onClicked: root.makeDefault()
+          onClicked: root.launchPicker()
         }
-      }
 
-      Button {
-        text: "Open a browser"
-        bordered: true
-        foreground: card.fg
-        fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-        onClicked: root.launchPicker()
-      }
+        PanelSeparator { foreground: card.fg }
 
-      PanelSeparator { foreground: card.fg }
+        PanelSectionHeader {
+          text: "List"
+          foreground: card.fg
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+        }
 
-      PanelSectionHeader {
-        text: "List"
-        foreground: card.fg
-        fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-      }
+        Toggle {
+          width: parent.width
+          label: "Manage rows first"
+          description: "Keep the profile-management rows at the top"
+          checked: root.config.settings.manageFirst
+          foreground: card.fg
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          onClicked: root.saveSettings({ manageFirst: !checked })
+        }
 
-      Toggle {
-        width: parent.width
-        label: "Manage rows first"
-        description: "Keep the profile-management rows at the top"
-        checked: root.config.settings.manageFirst
-        foreground: card.fg
-        fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-        onClicked: root.saveSettings({ manageFirst: !checked })
-      }
+        Toggle {
+          width: parent.width
+          label: "Plain browsers first"
+          description: "Keep browsers without separate profiles above the named ones"
+          checked: root.config.settings.genericFirst
+          foreground: card.fg
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          onClicked: root.saveSettings({ genericFirst: !checked })
+        }
 
-      Toggle {
-        width: parent.width
-        label: "Plain browsers first"
-        description: "Keep browsers without separate profiles above the named ones"
-        checked: root.config.settings.genericFirst
-        foreground: card.fg
-        fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-        onClicked: root.saveSettings({ genericFirst: !checked })
-      }
+        PanelSeparator { foreground: card.fg }
 
-      PanelSeparator { foreground: card.fg }
+        PanelSectionHeader {
+          text: "Rules"
+          foreground: card.fg
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+        }
 
-      PanelSectionHeader {
-        text: "Rules"
-        foreground: card.fg
-        fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-      }
+        Toggle {
+          width: parent.width
+          label: "Apply rules automatically"
+          description: "Open a matching host without showing the picker"
+          checked: root.config.settings.autoOpenRules
+          foreground: card.fg
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          onClicked: root.saveSettings({ autoOpenRules: !checked })
+        }
 
-      Toggle {
-        width: parent.width
-        label: "Apply rules automatically"
-        description: "Open a matching host without showing the picker"
-        checked: root.config.settings.autoOpenRules
-        foreground: card.fg
-        fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-        onClicked: root.saveSettings({ autoOpenRules: !checked })
-      }
+        Toggle {
+          width: parent.width
+          label: "Learn from repeats"
+          description: "Offer a permanent rule after " + root.config.settings.promptAfter
+            + " identical choices"
+          checked: root.config.settings.learnRules
+          foreground: card.fg
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          onClicked: root.saveSettings({ learnRules: !checked })
+        }
 
-      Toggle {
-        width: parent.width
-        label: "Learn from repeats"
-        description: "Offer a permanent rule after " + root.config.settings.promptAfter
-          + " identical choices"
-        checked: root.config.settings.learnRules
-        foreground: card.fg
-        fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-        onClicked: root.saveSettings({ learnRules: !checked })
-      }
-
-      RulesView {
-        width: parent.width
-        rules: root.config.rules
-        foreground: card.fg
-        dim: card.dim
-        fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-        onRemoved: function (pattern) { root.removeRule(pattern) }
+        RulesView {
+          width: parent.width
+          rules: root.config.rules
+          foreground: card.fg
+          dim: card.dim
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          onRemoved: function (pattern) { root.removeRule(pattern) }
+        }
       }
     }
   }
