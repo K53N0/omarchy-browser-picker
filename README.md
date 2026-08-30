@@ -187,15 +187,22 @@ re-parses it as shell input.
 
 ```bash
 omarchy plugin remove k53n0.browser-picker
-xdg-settings set default-web-browser <your-browser>.desktop
 ```
 
-Rules and rankings are left behind. To remove those too:
+The default-browser slot heals itself. `omarchy plugin remove` deletes the
+plugin folder without running anything, so the `.desktop` never points into
+it: it points at a small wrapper outside, written by `--set-default`, which
+passes straight through while the plugin exists. On the first link after
+removal the wrapper restores whichever browser was the default before the
+picker took over, and opens that link there.
+
+Rules and rankings are left behind. To remove everything:
 
 ```bash
-rm -f ~/.config/omarchy/browser-picker.json \
-      ~/.local/state/omarchy/browser-picker.json \
-      ~/.local/share/applications/browser-picker.desktop
+rm -rf ~/.config/omarchy/browser-picker.json \
+       ~/.local/state/omarchy/browser-picker.json \
+       ~/.local/share/applications/browser-picker.desktop \
+       ~/.local/share/browser-picker
 ```
 
 ## Development
