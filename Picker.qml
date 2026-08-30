@@ -33,6 +33,7 @@ Item {
   property var config: Model.parseConfig("")
   property var pickerState: Model.parseState("")
   property bool stateLoaded: false
+  property bool configLoaded: false
   property bool legacyChecked: false
 
   // The live request. Empty selectionFile means nothing is waiting on us.
@@ -144,11 +145,17 @@ Item {
     // anything while it reflects real use.
     var wasPending = doneFile !== ""
 
-    if (entry && !entry.manage && wasPending) {
+    // Never persist against a file that has not finished loading: the write
+    // would replace its contents with the in-memory default, so one early pick
+    // after a shell start silently erases the whole history. Dropping the one
+    // data point is the cheaper loss.
+    if (entry && !entry.manage && wasPending && stateLoaded) {
       pickerState = Model.recordChoice(pickerState, entry.id, host, now)
       stateFile.setText(Model.serializeState(pickerState))
+    }
 
-      if (alsoMakeRule && host) {
+    if (entry && !entry.manage && wasPending) {
+      if (alsoMakeRule && host && configLoaded) {
         var nextRules = Model.upsertRule(config.rules, host, entry.id, true)
         config = Model.parseConfig(JSON.stringify({
           settings: config.settings, rules: nextRules
@@ -291,7 +298,11 @@ Item {
   // scan because its targets were label substrings, which only mean something
   // once the labels exist.
   function importLegacyRules() {
-    if (legacyChecked || entries.length === 0) return
+    // Waiting on configLoaded matters as much as the emptiness check below it:
+    // against a config that merely has not loaded yet, "no rules" is false and
+    // the import would overwrite the real ones. Not marking legacyChecked, so
+    // the next scan tries again once the config is in.
+    if (legacyChecked || entries.length === 0 || !configLoaded) return
     legacyChecked = true
     if (config.rules.length > 0) return
     legacyFile.reload()
@@ -318,8 +329,10 @@ Item {
     atomicWrites: true
     printErrors: false
     onFileChanged: reload()
-    onLoaded: root.config = Model.parseConfig(text())
-    onLoadFailed: root.config = Model.parseConfig("")
+    // A missing file counts as loaded: an empty config is a real state to
+    // build on, unlike one that simply has not arrived yet.
+    onLoaded: { root.config = Model.parseConfig(text()); root.configLoaded = true }
+    onLoadFailed: { root.config = Model.parseConfig(""); root.configLoaded = true }
   }
 
   FileView {
