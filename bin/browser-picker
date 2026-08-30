@@ -159,13 +159,22 @@ fallback_pick() {
     if [[ $family == firefox ]]; then argv+=("-P" "$profile")
     else argv+=("--profile-directory=$profile") ; fi
   fi
+  local window_flag_given=false
   for flag in ${flags+"${flags[@]}"}; do
+    [[ $flag == "--new-window" || $flag == "--new-tab" ]] && window_flag_given=true
     if [[ $family == firefox && ( $flag == "--incognito" || $flag == "--inprivate" ) ]]; then
       argv+=("--private-window")
     else
       argv+=("$flag")
     fi
   done
+  # The one setting the fallback honors. Rules and ranking need the shell, but
+  # where the window opens is launch mechanics, and surprising the user least
+  # matters most on the path that only runs when something else already broke.
+  if [[ $window_flag_given == false ]] \
+    && [[ $(jq -r '.settings.newWindow // false' "$HOME/.config/omarchy/browser-picker.json" 2>/dev/null) == true ]]; then
+    argv+=("--new-window")
+  fi
   if [[ $manage == true ]]; then
     [[ $family == firefox ]] && argv+=("about:profiles") || argv+=("chrome://profile-picker")
   else

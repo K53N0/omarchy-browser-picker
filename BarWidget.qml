@@ -206,6 +206,24 @@ BarWidget {
         PanelSeparator { foreground: card.fg }
 
         PanelSectionHeader {
+          text: "Launch"
+          foreground: card.fg
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+        }
+
+        Toggle {
+          width: parent.width
+          label: "Open in a new window"
+          description: "A new window on the current workspace, not a tab in a window somewhere else"
+          checked: root.config.settings.newWindow
+          foreground: card.fg
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          onClicked: root.saveSettings({ newWindow: !checked })
+        }
+
+        PanelSeparator { foreground: card.fg }
+
+        PanelSectionHeader {
           text: "List"
           foreground: card.fg
           fontFamily: root.bar ? root.bar.fontFamily : Style.font.family

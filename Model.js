@@ -71,7 +71,12 @@ var DEFAULT_SETTINGS = {
   // Keep the "manage profiles" rows at the top rather than the bottom. They
   // are the rows you reach for deliberately, and hunting for them at the end
   // of forty entries is worse than passing them on the way down.
-  manageFirst: true
+  manageFirst: true,
+  // Open every link in a new window rather than a tab. A tab lands in that
+  // profile's most recent window, which is routinely on another workspace —
+  // so the click yanks focus somewhere else entirely. Off by default because
+  // tab-hoarders feel exactly the opposite way about it.
+  newWindow: false
 }
 
 function parseSettings(raw) {
@@ -82,7 +87,8 @@ function parseSettings(raw) {
     learnRules: given.learnRules !== false,
     promptAfter: isFinite(after) ? Math.max(2, Math.min(20, after)) : DEFAULT_SETTINGS.promptAfter,
     genericFirst: given.genericFirst !== false,
-    manageFirst: given.manageFirst !== false
+    manageFirst: given.manageFirst !== false,
+    newWindow: given.newWindow === true
   }
 }
 
@@ -361,7 +367,7 @@ var MANAGE_URL = { chromium: "chrome://profile-picker", firefox: "about:profiles
 // private flag by grepping the default browser's --help for MOZ_LOG and this
 // picker answers that probe with silence. Translating it for the Firefox family
 // is therefore not an edge case, it is the normal path.
-function launchArgs(entry, urls, flags) {
+function launchArgs(entry, urls, flags, settings) {
   var args = []
   if (!entry) return args
 
@@ -371,8 +377,10 @@ function launchArgs(entry, urls, flags) {
   }
 
   var list = flags || []
+  var windowFlagGiven = false
   for (var i = 0; i < list.length; i++) {
     var flag = list[i]
+    if (flag === "--new-window" || flag === "--new-tab") windowFlagGiven = true
     if (entry.family === "firefox" && (flag === "--incognito" || flag === "--inprivate")) {
       args.push("--private-window")
     } else if (entry.family === "chromium" && flag === "--private-window") {
@@ -380,6 +388,12 @@ function launchArgs(entry, urls, flags) {
     } else {
       args.push(flag)
     }
+  }
+
+  // Both families take --new-window. An explicit flag from the caller wins
+  // over the setting, in either direction: whoever passed --new-tab meant it.
+  if (settings && settings.newWindow === true && !windowFlagGiven) {
+    args.push("--new-window")
   }
 
   if (entry.manage) {
