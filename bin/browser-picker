@@ -63,6 +63,17 @@ case "$action" in
     # is what omarchy-launch-browser itself does to read the value back.
     env -u BROWSER xdg-settings set default-web-browser "$DESKTOP_ID" \
       || die "xdg-settings refused $DESKTOP_ID"
+    # xdg-settings only covers the web-browser slot. Protocol handlers on the
+    # MimeType line (zoommtg, zoomus, …) have to be claimed separately, or a
+    # clicked Zoom link keeps going to whichever app last registered them.
+    if command -v xdg-mime >/dev/null; then
+      mime_line=$(sed -n 's/^MimeType=//p' "$applications/$DESKTOP_ID")
+      IFS=';' read -r -a mime_list <<<"$mime_line"
+      for mime in "${mime_list[@]}"; do
+        [[ $mime == x-scheme-handler/* ]] || continue
+        env -u BROWSER xdg-mime default "$DESKTOP_ID" "$mime" 2>/dev/null || true
+      done
+    fi
     echo "browser-picker is now the default browser"
     exit 0
     ;;
@@ -123,16 +134,127 @@ ask_plugin() {
   run_argv "$selection"
 }
 
+# --- Scheme handlers (used by the fallback; the overlay uses Model.js) ------
+# Kept dumb on purpose: translate the URL, filter the list, launch with --app
+# when asked. Ranking and learning still require the shell.
+
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/browser-picker.json"
+
+scheme_of() {
+  local url=$1 scheme rest
+  [[ $url =~ ^([a-zA-Z][a-zA-Z0-9+.-]*): ]] || return 1
+  scheme=${BASH_REMATCH[1],,}
+  rest=${url#"${BASH_REMATCH[1]}":}
+  if [[ $rest == //* ]]; then
+    printf '%s' "$scheme"
+    return 0
+  fi
+  [[ ${rest:0:1} == [0-9] ]] && return 1
+  printf '%s' "$scheme"
+}
+
+is_zoom_meeting_url() {
+  local url=$1
+  [[ $url =~ ^zoom(mtg|us):// ]] && return 0
+  [[ $url =~ ^https?://([a-zA-Z0-9.-]+\.)?zoom\.us/(j|s|w|wc/join)/[0-9]+ ]]
+}
+
+translate_zoom() {
+  local url=$1 confno pwd
+  confno=$(sed -n 's/.*[?&]confno=\([^&]*\).*/\1/p' <<<"$url")
+  if [[ -z $confno && $url =~ /(j|s|w|wc/join)/([0-9]+) ]]; then
+    confno=${BASH_REMATCH[2]}
+  fi
+  if [[ -z $confno ]]; then
+    if [[ $url =~ ^zoom(mtg|us):// ]]; then
+      printf '%s' "https://app.zoom.us/wc/home"
+    else
+      printf '%s' "$url"
+    fi
+    return
+  fi
+  pwd=$(sed -n 's/.*[?&]pwd=\([^&#]*\).*/\1/p' <<<"$url")
+  if [[ -n $pwd ]]; then
+    printf '%s' "https://app.zoom.us/wc/join/$confno?pwd=$pwd"
+  else
+    printf '%s' "https://app.zoom.us/wc/join/$confno"
+  fi
+}
+
+handler_for_url() {
+  local url=$1 scheme config='{}' meeting=false
+  scheme=$(scheme_of "$url") || true
+  is_zoom_meeting_url "$url" && meeting=true
+  [[ -r $CONFIG_FILE ]] && config=$(<"$CONFIG_FILE")
+  jq -c --arg scheme "$scheme" --argjson meeting "$meeting" '
+    (.handlers // [{
+      "id": "zoom",
+      "schemes": ["zoommtg", "zoomus"],
+      "label": "Zoom",
+      "launch": "app",
+      "translate": "zoom",
+      "entryIds": []
+    }])
+    | map(select(
+        ((.schemes // []) | index($scheme))
+        or ($meeting and .translate == "zoom")
+      ))
+    | .[0] // empty
+  ' <<<"$config" 2>/dev/null
+}
+
+apply_handler() { # sets scan, launch; rewrites urls
+  local handler=$1 i
+  launch=$(jq -r '.launch // "tab"' <<<"$handler")
+  if [[ $(jq -r '.translate // empty' <<<"$handler") == zoom ]]; then
+    for i in "${!urls[@]}"; do
+      urls[$i]=$(translate_zoom "${urls[$i]}")
+    done
+  fi
+  scan=$(jq -c --argjson handler "$handler" '
+    . as $root
+    | ($root.entries
+        | map(select(.manage | not))
+        | if $handler.launch == "app" then map(select(.family == "chromium")) else . end) as $eligible
+    | (
+        if (($handler.entryIds // []) | length) > 0 then
+          [ $handler.entryIds[] as $id | $eligible[] | select(.id == $id) ]
+        else $eligible end
+      ) as $picked
+    | (if ($picked | length) > 0 then $picked else $eligible end) as $final
+    | $root + {entries:
+        if (($handler.label // "") | length) > 0 then
+          $final | map(.label = ($handler.label + " — " + ((.label / "—")[-1] | gsub("^\\s+"; ""))))
+        else $final end
+      }
+  ' <<<"$scan")
+}
+
 # --- Fallback: fzf in a floating foot ---------------------------------------
 # Only when omarchy-shell is not answering — a crash, a restart, a login where
 # the shell has not come up yet. The default browser is the worst thing to have
 # broken, so there is always a second way through. This path is deliberately
 # dumb: no ranking, no rules, no learning.
 fallback_pick() {
-  local scan labels choice line bin family profile manage argv=()
+  local scan labels choice line bin family profile manage argv=() launch=tab handler=""
   command -v fzf >/dev/null || die "omarchy-shell is not running and fzf is not installed"
 
   scan=$("$SCAN") || die "could not list browsers"
+
+  if (( ${#urls[@]} > 0 )); then
+    handler=$(handler_for_url "${urls[0]}")
+    if [[ -n $handler ]]; then
+      apply_handler "$handler"
+    else
+      scheme=$(scheme_of "${urls[0]}" || true)
+      if [[ $scheme == zoommtg || $scheme == zoomus ]]; then
+        for i in "${!urls[@]}"; do
+          urls[$i]=$(translate_zoom "${urls[$i]}")
+        done
+      fi
+    fi
+  fi
+
   labels=$(jq -r '.entries[] | [.label, .bin, .family, .profile, (.manage|tostring)] | @tsv' <<<"$scan")
   [[ -n $labels ]] || die "no browsers found"
 
@@ -160,6 +282,9 @@ fallback_pick() {
     else argv+=("--profile-directory=$profile") ; fi
   fi
   for flag in ${flags+"${flags[@]}"}; do
+    if [[ $launch == app && ( $flag == "--new-window" || $flag == "--new-tab" ) ]]; then
+      continue
+    fi
     if [[ $family == firefox && ( $flag == "--incognito" || $flag == "--inprivate" ) ]]; then
       argv+=("--private-window")
     else
@@ -168,6 +293,8 @@ fallback_pick() {
   done
   if [[ $manage == true ]]; then
     [[ $family == firefox ]] && argv+=("about:profiles") || argv+=("chrome://profile-picker")
+  elif [[ $launch == app && ${#urls[@]} -gt 0 ]]; then
+    argv+=("--app=${urls[0]}")
   else
     argv+=(${urls+"${urls[@]}"})
   fi
