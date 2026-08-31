@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "k53n0.browser-picker",
   "name": "Browser Picker",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "K53N0",
   "license": "MIT",
-  "description": "Choose the browser and profile for every link, with per-site rules that learn from what you pick.",
+  "description": "Choose the browser and profile for every link, with per-site rules that learn from what you pick. Protocol apps such as Zoom meetings get the same choice.",
   "kinds": [
     "overlay",
     "bar-widget"
@@ -17,14 +17,15 @@
   },
   "barWidget": {
     "displayName": "Browser Picker",
-    "description": "Per-site browser and profile routing. The bar entry holds the rules and the default-browser switch; the picker itself appears whenever you open a link.",
+    "description": "Per-site browser and profile routing, including Zoom meetings. The bar entry holds the rules and the default-browser switch; the picker itself appears whenever you open a link.",
     "category": "Productivity",
     "aliases": [
       "browser",
       "profile",
       "picker",
       "chrome",
-      "firefox"
+      "firefox",
+      "zoom"
     ],
     "allowMultiple": false,
     "defaultSection": "right"
