@@ -8,5 +8,5 @@ Exec=@EXEC@ %U
 Terminal=false
 Icon=web-browser
 Categories=Network;WebBrowser;
-MimeType=x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/about;x-scheme-handler/unknown;text/html;
+MimeType=x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/about;x-scheme-handler/unknown;text/html;x-scheme-handler/zoommtg;x-scheme-handler/zoomus;
 StartupNotify=true

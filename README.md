@@ -162,13 +162,48 @@ prints every id it knows:
 ~/.config/omarchy/plugins/k53n0.browser-picker/bin/browser-picker-scan | jq -r '.entries[].id'
 ```
 
+## Protocol apps
+
+Some links are not web pages. A `zoommtg://` meeting is a protocol handler:
+Chromium cannot load it. The link in the calendar is usually worse:
+`https://us02web.zoom.us/j/…`, a regional join page that then tries to
+fire that protocol. Opening either as a tab in whichever window happened
+to be in front is the same identity mix-up this picker exists to stop.
+
+A handler claims those schemes, rewrites them to a URL the browser can
+actually open, and shows only the profiles that should answer — launched as
+an `--app` window, not a tab.
+
+```json
+{
+  "handlers": [
+    {
+      "id": "zoom",
+      "schemes": ["zoommtg", "zoomus"],
+      "label": "Zoom",
+      "launch": "app",
+      "translate": "zoom",
+      "entryIds": ["chromium:Profile 1", "chromium:Default"]
+    }
+  ]
+}
+```
+
+`id` is the ranking and rules host, so "always open Zoom here" never
+collides with `https://zoom.us`. `entryIds` restricts the list; omit it to
+offer every Chromium profile. The Zoom handler is built in — an explicit
+`"handlers": []` turns it off. `--set-default` also claims the schemes, so
+clicked Zoom links come here instead of a single Zoom desktop file.
+
 ## When the shell is down
 
 The default browser is the worst thing to have broken, so there is a second
 path. If `omarchy-shell` does not answer, the picker falls back to `fzf` in a
-floating `foot` window: no ranking, no rules, just the list. Links keep
-opening through a shell crash, a restart, or a login where the shell has not
-come up yet.
+floating `foot` window: no ranking, no rules, no learning. Handlers still
+filter the list and launch with `--app`, because a Zoom link that opens as a
+dead `zoommtg://` tab is worse than an unranked menu. Links keep opening
+through a shell crash, a restart, or a login where the shell has not come
+up yet.
 
 ## How it works
 
@@ -176,7 +211,9 @@ come up yet.
 deliberately thin. It hands the request to the plugin over shell IPC and
 launches whatever comes back. Every decision — rules, ranking, learning —
 happens in `Picker.qml`, so there is one implementation of each rather than one
-in QML and another in bash.
+in QML and another in bash. Handler launch is the exception: the fallback has
+to rewrite a Zoom URL and pass `--app` itself, because that path never
+reaches QML.
 
 The reply crosses back as a ready-to-run argv, NUL-separated, rather than a
 name to be re-resolved. A profile called `He said "hi"` or `a; rm -rf ~`

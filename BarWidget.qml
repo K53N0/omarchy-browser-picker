@@ -45,15 +45,12 @@ BarWidget {
     var settings = {}
     for (var key in config.settings) settings[key] = config.settings[key]
     for (var field in patch) settings[field] = patch[field]
-    config = Model.parseConfig(JSON.stringify({ settings: settings, rules: config.rules }))
+    config = Model.copyConfig(config, { settings: settings })
     configFile.setText(Model.serializeConfig(config))
   }
 
   function removeRule(pattern) {
-    config = Model.parseConfig(JSON.stringify({
-      settings: config.settings,
-      rules: Model.removeRule(config.rules, pattern)
-    }))
+    config = Model.copyConfig(config, { rules: Model.removeRule(config.rules, pattern) })
     configFile.setText(Model.serializeConfig(config))
   }
 

@@ -33,14 +33,17 @@ Item {
   property var config: Model.parseConfig("")
   property var pickerState: Model.parseState("")
   property bool stateLoaded: false
+  property bool configLoaded: false
   property bool legacyChecked: false
 
   // The live request. Empty selectionFile means nothing is waiting on us.
   property string selectionFile: ""
   property string doneFile: ""
   property var urls: []
+  property var incomingUrls: []
   property var flags: []
   property string host: ""
+  property var handler: null
 
   property string filter: ""
   property int cursor: 0
@@ -64,8 +67,9 @@ Item {
     return screens.length > 0 ? screens[0] : null
   }
 
+  readonly property var activeEntries: Model.entriesForHandler(entries, handler)
   readonly property var rows: Model.rankEntries(
-    entries, pickerState, config, host, filter, Date.now() / 1000)
+    activeEntries, pickerState, config, host, filter, Date.now() / 1000)
   readonly property var currentEntry:
     rows.length && cursor >= 0 && cursor < rows.length ? rows[cursor] : null
 
@@ -74,7 +78,11 @@ Item {
   readonly property bool offersRule: !!currentEntry && Model.shouldOfferRule(
     pickerState, config, host, currentEntry, config.settings.promptAfter)
 
-  readonly property string heading: host || (urls.length ? urls[0] : "Open with")
+  readonly property string heading: handler
+    ? (urls.length ? urls[0] : (handler.label || handler.id || "Open with"))
+    : (host || (urls.length ? urls[0] : "Open with"))
+
+  readonly property string ruleHostLabel: handler && handler.label ? handler.label : host
 
   // ------------------------------------------------------------------ IPC
 
@@ -94,9 +102,9 @@ Item {
 
     selectionFile = String(request.selectionFile || "")
     doneFile = String(request.doneFile || "")
-    urls = Array.isArray(request.urls) ? request.urls.map(String) : []
     flags = Array.isArray(request.flags) ? request.flags.map(String) : []
-    host = urls.length ? Model.hostOf(urls[0]) : ""
+    incomingUrls = Array.isArray(request.urls) ? request.urls.map(String) : []
+    applyRequest()
     filter = ""
     cursor = 0
     pointerGate.reset()
@@ -114,11 +122,24 @@ Item {
     scanProcess.running = true
   }
 
+  function applyRequest() {
+    var prepared = Model.prepareRequest(incomingUrls, config.handlers)
+    urls = prepared.urls
+    host = prepared.host
+    handler = prepared.handler
+  }
+
   // Decide whether this request needs a human at all.
   function resolve() {
+    // Handlers live in the config file. Resolving against the in-memory
+    // default would show every Chromium profile for a Zoom link, then
+    // replace the list once the real entryIds landed — a flicker, and a
+    // wrong auto-open if a rule matched the default host.
+    if (!configLoaded) return
+    if (entries.length === 0) return
     var rule = host ? Model.matchRule(config.rules, host) : null
     if (rule && config.settings.autoOpenRules) {
-      var target = Model.entryById(entries, rule.entryId)
+      var target = Model.entryById(activeEntries, rule.entryId)
       if (target) { finish(target, false); return }
       // A rule pointing at a profile that no longer exists is stale, not fatal:
       // fall through to the picker rather than refusing to open the link.
@@ -150,14 +171,12 @@ Item {
 
       if (alsoMakeRule && host) {
         var nextRules = Model.upsertRule(config.rules, host, entry.id, true)
-        config = Model.parseConfig(JSON.stringify({
-          settings: config.settings, rules: nextRules
-        }))
+        config = Model.copyConfig(config, { rules: nextRules })
         configFile.setText(Model.serializeConfig(config))
       }
     }
 
-    var argv = entry ? [entry.bin].concat(Model.launchArgs(entry, urls, flags)) : []
+    var argv = entry ? [entry.bin].concat(Model.launchArgs(entry, urls, flags, config.settings, handler)) : []
     deliver(argv)
     opened = false
   }
@@ -202,15 +221,12 @@ Item {
     var next = config.rules
     if (oldPattern && oldPattern !== newPattern) next = Model.removeRule(next, oldPattern)
     next = Model.upsertRule(next, newPattern, entryId, false)
-    config = Model.parseConfig(JSON.stringify({ settings: config.settings, rules: next }))
+    config = Model.copyConfig(config, { rules: next })
     configFile.setText(Model.serializeConfig(config))
   }
 
   function removeRule(pattern) {
-    config = Model.parseConfig(JSON.stringify({
-      settings: config.settings,
-      rules: Model.removeRule(config.rules, pattern)
-    }))
+    config = Model.copyConfig(config, { rules: Model.removeRule(config.rules, pattern) })
     configFile.setText(Model.serializeConfig(config))
   }
 
@@ -304,9 +320,7 @@ Item {
     onLoaded: {
       var imported = Model.migrateLegacyRules(text(), root.entries)
       if (imported.length === 0) return
-      root.config = Model.parseConfig(JSON.stringify({
-        settings: root.config.settings, rules: imported
-      }))
+      root.config = Model.copyConfig(root.config, { rules: imported })
       configFile.setText(Model.serializeConfig(root.config))
     }
   }
@@ -318,8 +332,22 @@ Item {
     atomicWrites: true
     printErrors: false
     onFileChanged: reload()
-    onLoaded: root.config = Model.parseConfig(text())
-    onLoadFailed: root.config = Model.parseConfig("")
+    // A missing file counts as loaded: an empty config is a real state to
+    // build on, unlike one that simply has not arrived yet. Handlers live in
+    // the config, so a request that arrived first has to wait for this.
+    onLoaded: {
+      root.config = Model.parseConfig(text())
+      root.configLoaded = true
+      if (root.doneFile && !root.opened) {
+        root.applyRequest()
+        root.resolve()
+      }
+    }
+    onLoadFailed: {
+      root.config = Model.parseConfig("")
+      root.configLoaded = true
+      if (root.doneFile && !root.opened) root.resolve()
+    }
   }
 
   FileView {
@@ -529,7 +557,7 @@ Item {
         anchors.right: parent.right
         anchors.margins: Style.space(12)
         text: root.offersRule
-          ? "↵ open   ·   Ctrl+↵ always open " + root.host + " here"
+          ? "↵ open   ·   Ctrl+↵ always open " + root.ruleHostLabel + " here"
           : "↵ open   ·   ↑↓ move   ·   esc cancel"
         color: root.offersRule ? Color.accent : Color.muted
         font.family: Style.font.family
