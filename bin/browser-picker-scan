@@ -129,21 +129,34 @@ scan_chromium() {
 # profiles.ini is INI: [ProfileN] sections with Name= and Path=. Launching uses
 # -P <name>, so the name is what gets stored, not the path.
 #
-# bin | dir under ~ | display name | icon
+# bin | dirs under ~ (":"-separated, first readable one wins) | display name | icon
 FIREFOX_BROWSERS=(
   "firefox|.mozilla/firefox|Firefox|🦊"
-  "zen-browser|.zen|Zen|🧘"
+  "zen-browser|.zen:.config/zen|Zen|🧘"
   "librewolf|.librewolf|LibreWolf|🐺"
   "floorp|.floorp|Floorp|🏢"
   "waterfox|.waterfox|Waterfox|💧"
 )
 
 scan_firefox() {
-  local bin=$1 dir=$2 name=$3 icon=$4
+  local bin=$1 dirs=$2 name=$3 icon=$4
   command -v "$bin" >/dev/null || return 0
 
-  local ini="$HOME/$dir/profiles.ini" names=() profile_name=""
-  if [[ -r $ini ]]; then
+  # One browser, several possible homes: Zen ships builds that keep profiles in
+  # ~/.zen and XDG-following builds that keep them in ~/.config/zen. Take the
+  # first candidate that actually has a readable profiles.ini, so a machine with
+  # a leftover empty ~/.zen still finds the profiles it really uses.
+  local ini="" candidate names=() profile_name=""
+  local -a candidates
+  IFS=':' read -ra candidates <<<"$dirs"
+  for candidate in "${candidates[@]}"; do
+    if [[ -r "$HOME/$candidate/profiles.ini" ]]; then
+      ini="$HOME/$candidate/profiles.ini"
+      break
+    fi
+  done
+
+  if [[ -n $ini ]]; then
     local in_profile=0
     while IFS= read -r line || [[ -n $line ]]; do
       line=${line%$'\r'}

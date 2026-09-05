@@ -78,4 +78,42 @@ jq -e '[.entries[] | select(.bin != "chromium")] | length == 0' \
   >/dev/null <<<"$out" || fail "an uninstalled browser was listed" "$out"
 ok
 
+# --- Firefox family: profiles.ini does not always live in the same place -----
+# Zen's older builds keep profiles in ~/.zen, its XDG-following builds keep them
+# in ~/.config/zen. A second fake HOME, because the assertion just above is that
+# nothing uninstalled shows up in the first one.
+zfake=$(mktemp -d)
+trap 'rm -rf "$fake" "$zfake"' EXIT
+
+mkdir -p "$zfake/bin" "$zfake/.zen" "$zfake/.config/zen"
+printf '#!/bin/sh\nexit 0\n' >"$zfake/bin/zen-browser"
+chmod +x "$zfake/bin/zen-browser"
+ln -s "$(command -v jq)" "$zfake/bin/jq"
+
+# ~/.zen is present but has no profiles.ini, the way it is left behind once a
+# build has moved its profiles to the XDG location.
+cat >"$zfake/.config/zen/profiles.ini" <<'INI'
+[Profile0]
+Name=Work
+IsRelative=1
+Path=bxx3i60i.Work
+
+[Profile1]
+Name=Admin
+IsRelative=1
+Path=bsvg76f9.Admin
+INI
+
+zout=$(HOME="$zfake" PATH="$zfake/bin" "$SCAN") \
+  || fail "scan exited non-zero for the XDG profile dir" "$zout"
+
+jq -e '[.entries[] | select(.manage | not) | .profile] | sort == ["Admin","Work"]' \
+  >/dev/null <<<"$zout" || fail "profiles under ~/.config/zen were not found" "$zout"
+ok
+
+# Found profiles mean the browser is not one plain generic entry.
+jq -e '[.entries[] | select(.generic)] | length == 0' \
+  >/dev/null <<<"$zout" || fail "a browser with two profiles was marked generic" "$zout"
+ok
+
 echo "$passed passed"
