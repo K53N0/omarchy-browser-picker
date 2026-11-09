@@ -57,11 +57,53 @@ case "$action" in
     ;;
   set-default)
     applications="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-    mkdir -p "$applications"
+    support="${XDG_DATA_HOME:-$HOME/.local/share}/browser-picker"
+    mkdir -p "$applications" "$support"
+
+    # Remember who held the default before us. `omarchy plugin remove` deletes
+    # this folder without running anything — the installer runs no plugin code,
+    # by design, and neither does the remover — so whatever the .desktop points
+    # at must outlive the plugin and must know where to send links once the
+    # plugin is gone.
+    previous=$(env -u BROWSER xdg-settings get default-web-browser 2>/dev/null)
+    if [[ -n $previous && $previous != "$DESKTOP_ID" ]]; then
+      printf '%s\n' "$previous" >"$support/fallback"
+    fi
+
+    # The .desktop therefore points at this wrapper, outside the plugin folder:
+    # a pass-through while the plugin exists, and once it is not, it hands the
+    # default back and reopens the link there — rather than every link in every
+    # application dying silently against a dead path. Install-time values are
+    # baked in; everything else is escaped to run when the wrapper does.
+    cat >"$support/launch" <<WRAPPER || die "could not write $support/launch"
+#!/bin/bash
+# Written by browser-picker --set-default; rerunning that rewrites this.
+shim='$HERE/browser-picker'
+if [[ -x \$shim ]]; then
+  exec "\$shim" "\$@"
+fi
+
+fallback=""
+[[ -r '$support/fallback' ]] && fallback=\$(<'$support/fallback')
+if [[ -z \$fallback ]]; then
+  command -v notify-send >/dev/null && notify-send "browser-picker" "The plugin was removed and no previous default browser is recorded. Set one with: xdg-settings set default-web-browser <browser>.desktop"
+  exit 1
+fi
+
+env -u BROWSER xdg-settings set default-web-browser "\$fallback"
+command -v notify-send >/dev/null && notify-send "browser-picker" "The browser-picker plugin was removed — default browser restored to \$fallback"
+for argument in "\$@"; do
+  [[ \$argument == -* ]] && continue
+  exec xdg-open "\$argument"
+done
+exit 0
+WRAPPER
+    chmod +x "$support/launch" || die "could not make $support/launch executable"
+
     # Copied, not symlinked: omarchy-plugin-validate refuses a symlink anywhere
     # inside a plugin folder, and a link pointing back into the plugin would
     # break the moment the plugin is removed.
-    sed "s|@EXEC@|$HERE/browser-picker|" "$HERE/../applications/$DESKTOP_ID" \
+    sed "s|@EXEC@|$support/launch|" "$HERE/../applications/$DESKTOP_ID" \
       >"$applications/$DESKTOP_ID" || die "could not write $applications/$DESKTOP_ID"
     command -v update-desktop-database >/dev/null && update-desktop-database "$applications" 2>/dev/null
     # Omarchy exports BROWSER=omarchy-launch-browser, and xdg-settings refuses
