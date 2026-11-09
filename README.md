@@ -49,6 +49,12 @@ This is not done at install time because `omarchy plugin add` never runs plugin
 code, by design. Until it is done, the picker only handles `SUPER+SHIFT+B` and
 the bar entry, not links clicked in other applications.
 
+Omarchy sends every clicked link to `omarchy-browser.desktop`, set in
+`~/.config/hyprland-mimeapps.list`, which hands it on to the default browser
+in `~/.config/mimeapps.list`. `--set-default` takes that second slot and
+leaves Omarchy's routing alone. If the Hyprland list names some other handler
+instead, `--set-default` stops and says which one.
+
 Needs `jq` and, for the fallback described below, `fzf` and `foot`. Omarchy
 ships all three.
 
@@ -201,7 +207,10 @@ plugin folder without running anything, so the `.desktop` never points into
 it: it points at a small wrapper outside, written by `--set-default`, which
 passes straight through while the plugin exists. On the first link after
 removal the wrapper restores whichever browser was the default before the
-picker took over, and opens that link there.
+picker took over, and opens that link there. With no previous default on
+record it takes itself out of `mimeapps.list`, so the link goes to the next
+browser in line. If a link ever comes straight back to the wrapper, it stops
+with a notification instead of looping.
 
 Rules and rankings are left behind. To remove everything:
 
@@ -217,6 +226,7 @@ rm -rf ~/.config/omarchy/browser-picker.json \
 ```bash
 node test/test_model.js
 bash test/test_scan.sh
+bash test/test_set_default.sh
 omarchy plugin validate .
 qmllint -I /usr/share/omarchy/shell -I . *.qml
 omarchy restart shell

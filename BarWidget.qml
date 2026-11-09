@@ -89,7 +89,12 @@ BarWidget {
 
   Process {
     id: defaultProcess
-    command: ["xdg-settings", "get", "default-web-browser"]
+    // Asked the way Omarchy's launchers ask. On Omarchy a plain
+    // `xdg-settings get` reads the desktop-specific list first and answers
+    // omarchy-browser.desktop, the router that hands links on to the real
+    // default. omarchy-cmd-default-browser looks past it; the fallback reads
+    // mimeapps.list directly, which is where --set-default writes.
+    command: ["bash", "-c", "omarchy-cmd-default-browser 2>/dev/null || env -u BROWSER XDG_CURRENT_DESKTOP= xdg-settings get default-web-browser"]
     stdout: StdioCollector {
       id: defaultOut
       waitForEnd: true
