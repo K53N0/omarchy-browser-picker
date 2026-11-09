@@ -33,7 +33,13 @@ for argument in "$@"; do
     --list-targets)       action="list" ;;
     --set-default)        action="set-default" ;;
     --private)            flags+=("--incognito") ;;
-    -*)                   flags+=("$argument") ;;
+    # The launch-mode flags this understands, and nothing else rides through:
+    # the default browser handler is fed strings by every application on the
+    # system, and forwarding an arbitrary --flag hands whoever crafted one the
+    # browser's whole command line — --load-extension included.
+    --incognito|--inprivate|--private-window|--new-window|--new-tab)
+                          flags+=("$argument") ;;
+    -*)                   echo "browser-picker: ignoring unrecognized flag: $argument" >&2 ;;
     *)                    urls+=("$argument") ;;
   esac
 done
