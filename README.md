@@ -133,6 +133,12 @@ screen.
 Private browsing is translated per family, so Omarchy's `--private` reaches
 Firefox as `--private-window` and Chromium as `--incognito`.
 
+By default a link opens as a tab, which lands in that profile's most recent
+window — routinely on another workspace, yanking focus somewhere else
+entirely. The **Open in a new window** toggle in the bar entry (`newWindow`
+in the config) opens every link in a new window on the current workspace
+instead.
+
 ## Configuration
 
 `~/.config/omarchy/browser-picker.json`, watched, so edits apply without a
@@ -146,7 +152,8 @@ restart.
     "learnRules": true,
     "promptAfter": 3,
     "genericFirst": true,
-    "manageFirst": true
+    "manageFirst": true,
+    "newWindow": false
   },
   "rules": [
     { "pattern": "example.com", "entryId": "chromium:Profile 19", "learned": false }

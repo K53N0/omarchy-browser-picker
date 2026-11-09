@@ -214,6 +214,39 @@ test("--incognito becomes --private-window for the Firefox family", () => {
   )
 })
 
+test("the newWindow setting adds --new-window for both families", () => {
+  const settings = M.parseSettings({ newWindow: true })
+  assert.deepEqual(
+    M.launchArgs(ENTRIES[0], ["https://x.test"], [], settings),
+    ["--profile-directory=Default", "--new-window", "https://x.test"]
+  )
+  assert.deepEqual(
+    M.launchArgs(ENTRIES[3], ["https://x.test"], [], settings),
+    ["-P", "dev", "--new-window", "https://x.test"]
+  )
+})
+
+test("an explicit window flag from the caller beats the setting", () => {
+  const settings = M.parseSettings({ newWindow: true })
+  assert.deepEqual(
+    M.launchArgs(ENTRIES[0], ["https://x.test"], ["--new-tab"], settings),
+    ["--profile-directory=Default", "--new-tab", "https://x.test"]
+  )
+  assert.deepEqual(
+    M.launchArgs(ENTRIES[0], ["https://x.test"], ["--new-window"], settings),
+    ["--profile-directory=Default", "--new-window", "https://x.test"]
+  )
+})
+
+test("newWindow is off unless set, and old callers are unaffected", () => {
+  assert.equal(M.parseSettings({}).newWindow, false)
+  assert.equal(M.parseSettings({ newWindow: "yes" }).newWindow, false)
+  assert.deepEqual(
+    M.launchArgs(ENTRIES[0], ["https://x.test"], []),
+    ["--profile-directory=Default", "https://x.test"]
+  )
+})
+
 test("a manage row opens the profile screen and ignores the URL", () => {
   const args = M.launchArgs(ENTRIES[4], ["https://x.test"], [])
   assert.deepEqual(args, ["chrome://profile-picker"])

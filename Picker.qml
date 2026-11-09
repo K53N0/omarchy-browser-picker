@@ -164,7 +164,7 @@ Item {
       }
     }
 
-    var argv = entry ? [entry.bin].concat(Model.launchArgs(entry, urls, flags)) : []
+    var argv = entry ? [entry.bin].concat(Model.launchArgs(entry, urls, flags, config.settings)) : []
     deliver(argv)
     opened = false
   }
