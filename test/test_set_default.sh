@@ -90,6 +90,14 @@ run "$plugin/bin/browser-picker" --set-default >/dev/null 2>&1
   || fail "omarchy-browser.desktop was recorded as the fallback" "$(<"$support/fallback")"
 ok
 
+# An earlier version recorded the router itself; a rerun clears that.
+echo omarchy-browser.desktop >"$support/fallback"
+echo browser-picker.desktop >"$STATE/default"
+run "$plugin/bin/browser-picker" --set-default >/dev/null 2>&1
+[[ ! -e $support/fallback ]] \
+  || fail "a recorded omarchy-browser.desktop fallback survived a rerun" "$(<"$support/fallback")"
+ok
+
 # --- a desktop list routing elsewhere is reported, not papered over -----------
 echo firefox.desktop >"$STATE/effective"
 out=$(run "$plugin/bin/browser-picker" --set-default 2>&1) \

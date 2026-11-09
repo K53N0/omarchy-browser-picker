@@ -79,6 +79,9 @@ case "$action" in
     previous=$(xdg_settings get default-web-browser 2>/dev/null)
     if [[ -n $previous && $previous != "$DESKTOP_ID" && $previous != omarchy-browser.desktop ]]; then
       printf '%s\n' "$previous" >"$support/fallback"
+    elif [[ -r $support/fallback && $(<"$support/fallback") == omarchy-browser.desktop ]]; then
+      # Recorded by an earlier --set-default that read the desktop list.
+      rm -f "$support/fallback"
     fi
 
     # The .desktop therefore points at this wrapper, outside the plugin folder:
