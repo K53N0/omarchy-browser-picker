@@ -175,13 +175,53 @@ prints every id it knows:
 ~/.config/omarchy/plugins/k53n0.browser-picker/bin/browser-picker-scan | jq -r '.entries[].id'
 ```
 
+## Protocol apps
+
+Some links are not web pages. A `zoommtg://` meeting is a protocol Chromium
+cannot load, and the link in a calendar is usually
+`https://us02web.zoom.us/j/…`, a regional join page that then tries to fire
+that protocol. Nothing does this until you ask. An empty `handlers` list is
+the default, so Zoom links keep going where they go today, including to the
+native Zoom client.
+
+A handler claims the schemes, rewrites the URL to one the browser can open,
+and shows only the profiles that should answer, launched as an `--app`
+window rather than a tab.
+
+```json
+{
+  "handlers": [
+    {
+      "id": "zoom",
+      "schemes": ["zoommtg", "zoomus"],
+      "label": "Zoom",
+      "launch": "app",
+      "translate": "zoom",
+      "entryIds": ["chromium:Profile 1", "chromium:Default"]
+    }
+  ]
+}
+```
+
+`id` is the ranking and rules host, so "always open Zoom here" never
+collides with `https://zoom.us`. `entryIds` restricts the list; omit it to
+offer every Chromium profile. Homepage and support links on `zoom.us` stay
+on the normal list. `translate` rewrites a join link to
+`https://app.zoom.us/wc/join/<id>`.
+
+Run `--set-default` again after adding the handler. It claims only the
+schemes a handler lists, so `zoommtg://` and `zoomus://` move here and the
+native client stops receiving them. Taking the handler back out and running
+`--set-default` again releases those schemes.
+
 ## When the shell is down
 
 The default browser is the worst thing to have broken, so there is a second
 path. If `omarchy-shell` does not answer, the picker falls back to `fzf` in a
-floating `foot` window: no ranking, no rules, just the list. Links keep
-opening through a shell crash, a restart, or a login where the shell has not
-come up yet.
+floating `foot` window: no ranking, no rules, no learning. A handler still
+applies there, because that path never reaches QML, and a link with no
+handler is left untouched. Links keep opening through a shell crash, a
+restart, or a login where the shell has not come up yet.
 
 ## How it works
 
@@ -189,7 +229,9 @@ come up yet.
 deliberately thin. It hands the request to the plugin over shell IPC and
 launches whatever comes back. Every decision — rules, ranking, learning —
 happens in `Picker.qml`, so there is one implementation of each rather than one
-in QML and another in bash.
+in QML and another in bash. Handler launch is the exception: the fallback has
+to rewrite a claimed URL and pass `--app` itself, because that path never
+reaches QML.
 
 The reply crosses back as a ready-to-run argv, NUL-separated, rather than a
 name to be re-resolved. A profile called `He said "hi"` or `a; rm -rf ~`
@@ -209,7 +251,8 @@ passes straight through while the plugin exists. On the first link after
 removal the wrapper restores whichever browser was the default before the
 picker took over, and opens that link there. With no previous default on
 record it takes itself out of `mimeapps.list`, so the link goes to the next
-browser in line. If a link ever comes straight back to the wrapper, it stops
+browser in line. Scheme claims from a handler are released the same way.
+If a link ever comes straight back to the wrapper, it stops
 with a notification instead of looping.
 
 Rules and rankings are left behind. To remove everything:

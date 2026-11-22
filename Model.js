@@ -53,6 +53,107 @@ function hostOf(url) {
   return rest.toLowerCase()
 }
 
+// Scheme of a URL, lowercased. Returns "" for a host:port or a bare path —
+// those are not schemes, even though they contain a colon.
+function schemeOf(url) {
+  var text = stringValue(url).trim()
+  var end = text.indexOf(":")
+  if (end <= 0) return ""
+  var scheme = text.slice(0, end).toLowerCase()
+  if (!/^[a-z][a-z0-9+.-]*$/.test(scheme)) return ""
+  // "example.com:8443" has a colon but is not a URI. A real scheme is followed
+  // by "//" (https, zoommtg) or by a non-digit (mailto:x, not host:443).
+  var rest = text.slice(end + 1)
+  if (rest.indexOf("//") === 0) return scheme
+  if (rest.charAt(0) >= "0" && rest.charAt(0) <= "9") return ""
+  return scheme
+}
+
+function isZoomScheme(scheme) {
+  return scheme === "zoommtg" || scheme === "zoomus"
+}
+
+function isZoomHost(host) {
+  host = stringValue(host).toLowerCase()
+  return host === "zoom.us" || endsWithLabel(host, "zoom.us")
+}
+
+// Path of a URL, without query or hash. "/" when there is none.
+function pathOf(url) {
+  var text = stringValue(url).trim()
+  var schemeEnd = text.indexOf("://")
+  var rest = schemeEnd >= 0 ? text.slice(schemeEnd + 3) : text
+  var slash = rest.indexOf("/")
+  if (slash < 0) return "/"
+  rest = rest.slice(slash)
+  rest = rest.split("?")[0]
+  rest = rest.split("#")[0]
+  return rest || "/"
+}
+
+// Join links arrive as https://us02web.zoom.us/j/<id>, not only as zoommtg://.
+// The interstitial that asks to open the Zoom app is still a meeting URL;
+// the homepage and the support site are not.
+function zoomMeetingId(url) {
+  var confno = queryParam(url, "confno")
+  if (confno) return confno
+  var scheme = schemeOf(url)
+  if (scheme && scheme !== "http" && scheme !== "https") return ""
+  if (!isZoomHost(hostOf(url))) return ""
+  var match = pathOf(url).match(/^\/(?:j|s|w|wc\/join)\/([0-9]+)\/?$/)
+  return match ? match[1] : ""
+}
+
+function isZoomMeetingUrl(url) {
+  if (isZoomScheme(schemeOf(url))) return true
+  return zoomMeetingId(url) !== ""
+}
+
+// Raw query value, not decoded: Zoom passwords are opaque tokens and
+// re-encoding them would change what the join URL sends.
+function queryParam(url, name) {
+  var text = stringValue(url)
+  var q = text.indexOf("?")
+  if (q < 0) return ""
+  var query = text.slice(q + 1)
+  var hash = query.indexOf("#")
+  if (hash >= 0) query = query.slice(0, hash)
+  var parts = query.split("&")
+  for (var i = 0; i < parts.length; i++) {
+    var eq = parts[i].indexOf("=")
+    var key = eq < 0 ? parts[i] : parts[i].slice(0, eq)
+    try { key = decodeURIComponent(key) } catch (e) { /* keep raw */ }
+    if (key === name) return eq < 0 ? "" : parts[i].slice(eq + 1)
+  }
+  return ""
+}
+
+// zoommtg:// is a protocol Chromium cannot load, and a regional
+// https://us02web.zoom.us/j/<id> page is the interstitial that then tries
+// to fire that protocol. Both become the web client, which is what --app opens.
+function translateZoomUrl(url) {
+  var text = stringValue(url).trim()
+  if (!text) return "https://app.zoom.us/wc/home"
+  var confno = zoomMeetingId(text)
+  var pwd = queryParam(text, "pwd")
+  if (!confno) {
+    return isZoomScheme(schemeOf(text)) ? "https://app.zoom.us/wc/home" : text
+  }
+  var join = "https://app.zoom.us/wc/join/" + confno
+  return pwd ? join + "?pwd=" + pwd : join
+}
+
+// Translation happens only for a handler that asked for it. Rewriting a
+// zoommtg:// URL with no handler configured would still steal the meeting
+// from the native client on the fallback path, which never reaches QML.
+function translateUrls(urls, handler) {
+  var list = urls || []
+  if (!handler || handler.translate !== "zoom") return list.slice()
+  var translated = []
+  for (var i = 0; i < list.length; i++) translated.push(translateZoomUrl(list[i]))
+  return translated
+}
+
 // ------------------------------------------------------------------- config
 
 var DEFAULT_SETTINGS = {
@@ -92,6 +193,61 @@ function parseSettings(raw) {
   }
 }
 
+function parseHandler(raw) {
+  if (!isObject(raw)) return null
+  var id = stringValue(raw.id).trim()
+  if (!id) return null
+
+  var schemes = []
+  if (Array.isArray(raw.schemes)) {
+    for (var i = 0; i < raw.schemes.length; i++) {
+      var scheme = stringValue(raw.schemes[i]).trim().toLowerCase()
+      if (scheme) schemes.push(scheme)
+    }
+  }
+  if (schemes.length === 0) return null
+
+  var launch = stringValue(raw.launch).trim() === "app" ? "app" : "tab"
+  var translate = stringValue(raw.translate).trim()
+  if (!translate && (id === "zoom" || schemes.indexOf("zoommtg") >= 0 || schemes.indexOf("zoomus") >= 0)) {
+    translate = "zoom"
+  }
+
+  var entryIds = []
+  if (Array.isArray(raw.entryIds)) {
+    for (var e = 0; e < raw.entryIds.length; e++) {
+      var entryId = stringValue(raw.entryIds[e]).trim()
+      if (entryId) entryIds.push(entryId)
+    }
+  }
+
+  return {
+    id: id,
+    schemes: schemes,
+    label: stringValue(raw.label).trim(),
+    launch: launch,
+    translate: translate,
+    entryIds: entryIds
+  }
+}
+
+// Nothing is claimed until someone writes a handler. A built-in Zoom handler
+// would open every zoom.us meeting as a Chromium app, and --set-default would
+// take zoommtg:// and zoomus:// away from the native client.
+function defaultHandlers() {
+  return []
+}
+
+function parseHandlers(raw) {
+  if (!Array.isArray(raw)) return defaultHandlers()
+  var handlers = []
+  for (var i = 0; i < raw.length; i++) {
+    var handler = parseHandler(raw[i])
+    if (handler) handlers.push(handler)
+  }
+  return handlers
+}
+
 function parseConfig(raw) {
   var parsed = null
   try { parsed = JSON.parse(stringValue(raw)) } catch (e) { parsed = null }
@@ -111,7 +267,8 @@ function parseConfig(raw) {
   return {
     version: CONFIG_VERSION,
     settings: parseSettings(parsed.settings),
-    rules: rules
+    rules: rules,
+    handlers: parseHandlers(Object.prototype.hasOwnProperty.call(parsed, "handlers") ? parsed.handlers : undefined)
   }
 }
 
@@ -119,8 +276,23 @@ function serializeConfig(config) {
   return JSON.stringify({
     version: CONFIG_VERSION,
     settings: parseSettings(config && config.settings),
-    rules: (config && config.rules) || []
+    rules: (config && config.rules) || [],
+    handlers: Array.isArray(config && config.handlers) ? config.handlers : defaultHandlers()
   }, null, 2) + "\n"
+}
+
+// Rebuild a config while keeping the fields the caller did not mention.
+// QML writes rules and settings independently; without this, saving a rule
+// would drop a handler the next time the file was written.
+function copyConfig(config, patch) {
+  var next = patch && isObject(patch) ? patch : {}
+  var payload = {
+    settings: next.settings || (config && config.settings),
+    rules: next.rules !== undefined ? next.rules : ((config && config.rules) || [])
+  }
+  if (next.handlers !== undefined) payload.handlers = next.handlers
+  else if (config && Array.isArray(config.handlers)) payload.handlers = config.handlers
+  return parseConfig(JSON.stringify(payload))
 }
 
 // A bare domain covers its subdomains; an explicit `*.` prefix covers only
@@ -150,6 +322,107 @@ function matchRule(rules, host) {
     if (!best || rules[i].pattern.length > best.pattern.length) best = rules[i]
   }
   return best
+}
+
+function handlerMatches(handler, url) {
+  if (!handler) return false
+  var scheme = schemeOf(url)
+  if (scheme && Array.isArray(handler.schemes)) {
+    for (var s = 0; s < handler.schemes.length; s++) {
+      if (handler.schemes[s] === scheme) return true
+    }
+  }
+  // A Zoom translator also owns https://*.zoom.us/j/<id>. Matching only
+  // zoommtg and zoomus leaves the calendar link — the one people actually
+  // click — as a normal website.
+  return handler.translate === "zoom" && isZoomMeetingUrl(url)
+}
+
+function matchHandler(handlers, url) {
+  if (!Array.isArray(handlers)) return null
+  for (var i = 0; i < handlers.length; i++) {
+    if (handlerMatches(handlers[i], url)) return handlers[i]
+  }
+  return null
+}
+
+// Rules and frecency for a Zoom meeting must not share a bucket with
+// https://zoom.us. Pinning "meetings go here" would otherwise pin the
+// marketing site too. The handler id is the host in that case. With no
+// handler configured, the URL keeps its real host and today's behaviour.
+function rankingHost(url, handler) {
+  if (handler && handler.id) return handler.id
+  return hostOf(url)
+}
+
+function prepareRequest(urls, handlers) {
+  var list = urls || []
+  var first = list.length ? list[0] : ""
+  var handler = matchHandler(handlers, first)
+  return {
+    handler: handler,
+    urls: translateUrls(list, handler),
+    host: rankingHost(first, handler)
+  }
+}
+
+function profileNameFromLabel(label) {
+  var text = stringValue(label)
+  var dash = text.lastIndexOf("—")
+  if (dash >= 0) return text.slice(dash + 1).trim()
+  return text.trim()
+}
+
+// The list a handler is allowed to show. Manage rows never belong here —
+// a meeting should not open chrome://profile-picker — and an --app launch
+// is a Chromium flag, so Firefox is dropped too.
+function entriesForHandler(entries, handler) {
+  if (!handler) return entries || []
+  var list = entries || []
+  var wanted = handler.entryIds || []
+  var restrict = wanted.length > 0
+  var want = {}
+  for (var i = 0; i < wanted.length; i++) want[wanted[i]] = true
+
+  function keep(entry) {
+    if (!entry || entry.manage) return false
+    if (handler.launch === "app" && entry.family !== "chromium") return false
+    if (restrict && !want[entry.id]) return false
+    return true
+  }
+
+  function relabel(entry) {
+    if (!handler.label) return entry
+    var copy = {}
+    for (var key in entry) copy[key] = entry[key]
+    var name = profileNameFromLabel(entry.label)
+    copy.label = handler.label + " — " + (name || entry.id)
+    return copy
+  }
+
+  var matched = []
+  for (var e = 0; e < list.length; e++) {
+    if (keep(list[e])) matched.push(relabel(list[e]))
+  }
+
+  // Stale entryIds should not refuse to open the meeting. Fall back to every
+  // eligible profile rather than an empty picker.
+  if (restrict && matched.length === 0) {
+    restrict = false
+    for (var again = 0; again < list.length; again++) {
+      if (keep(list[again])) matched.push(relabel(list[again]))
+    }
+  }
+
+  if (!restrict) return matched
+
+  var byId = {}
+  for (var m = 0; m < matched.length; m++) byId[matched[m].id] = matched[m]
+  var ordered = []
+  for (var w = 0; w < wanted.length; w++) {
+    if (byId[wanted[w]]) ordered.push(byId[wanted[w]])
+  }
+  return ordered
 }
 
 // Rules matching a typed query, by pattern or by the profile they point at.
@@ -367,7 +640,7 @@ var MANAGE_URL = { chromium: "chrome://profile-picker", firefox: "about:profiles
 // private flag by grepping the default browser's --help for MOZ_LOG and this
 // picker answers that probe with silence. Translating it for the Firefox family
 // is therefore not an edge case, it is the normal path.
-function launchArgs(entry, urls, flags, settings) {
+function launchArgs(entry, urls, flags, settings, handler) {
   var args = []
   if (!entry) return args
 
@@ -376,11 +649,15 @@ function launchArgs(entry, urls, flags, settings) {
     else args.push("--profile-directory=" + entry.profile)
   }
 
+  // --app already opens a dedicated window. A window flag next to it either
+  // no-ops or opens a second empty one.
+  var appLaunch = handler && handler.launch === "app"
   var list = flags || []
   var windowFlagGiven = false
   for (var i = 0; i < list.length; i++) {
     var flag = list[i]
     if (flag === "--new-window" || flag === "--new-tab") windowFlagGiven = true
+    if (appLaunch && (flag === "--new-window" || flag === "--new-tab")) continue
     if (entry.family === "firefox" && (flag === "--incognito" || flag === "--inprivate")) {
       args.push("--private-window")
     } else if (entry.family === "chromium" && flag === "--private-window") {
@@ -392,7 +669,7 @@ function launchArgs(entry, urls, flags, settings) {
 
   // Both families take --new-window. An explicit flag from the caller wins
   // over the setting, in either direction: whoever passed --new-tab meant it.
-  if (settings && settings.newWindow === true && !windowFlagGiven) {
+  if (!appLaunch && settings && settings.newWindow === true && !windowFlagGiven) {
     args.push("--new-window")
   }
 
@@ -402,6 +679,10 @@ function launchArgs(entry, urls, flags, settings) {
   }
 
   var targets = urls || []
+  if (appLaunch) {
+    if (targets[0]) args.push("--app=" + targets[0])
+    return args
+  }
   for (var u = 0; u < targets.length; u++) args.push(targets[u])
   return args
 }
@@ -437,12 +718,31 @@ if (typeof module !== "undefined" && module.exports) {
     HALF_LIFE_DAYS: HALF_LIFE_DAYS,
     DOMAIN_WEIGHT: DOMAIN_WEIGHT,
     hostOf: hostOf,
+    schemeOf: schemeOf,
+    isZoomScheme: isZoomScheme,
+    isZoomHost: isZoomHost,
+    pathOf: pathOf,
+    zoomMeetingId: zoomMeetingId,
+    isZoomMeetingUrl: isZoomMeetingUrl,
+    queryParam: queryParam,
+    translateZoomUrl: translateZoomUrl,
+    translateUrls: translateUrls,
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
     parseSettings: parseSettings,
+    parseHandler: parseHandler,
+    defaultHandlers: defaultHandlers,
+    parseHandlers: parseHandlers,
     parseConfig: parseConfig,
     serializeConfig: serializeConfig,
+    copyConfig: copyConfig,
     ruleMatches: ruleMatches,
     matchRule: matchRule,
+    handlerMatches: handlerMatches,
+    matchHandler: matchHandler,
+    rankingHost: rankingHost,
+    prepareRequest: prepareRequest,
+    profileNameFromLabel: profileNameFromLabel,
+    entriesForHandler: entriesForHandler,
     upsertRule: upsertRule,
     removeRule: removeRule,
     filterRules: filterRules,

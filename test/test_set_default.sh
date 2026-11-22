@@ -106,6 +106,52 @@ out=$(run "$plugin/bin/browser-picker" --set-default 2>&1) \
 ok
 echo omarchy-browser.desktop >"$STATE/effective"
 
+# --- no handler, so Zoom schemes stay with whoever has them -------------------
+grep -q 'zoom' "$LOG" \
+  && fail "set-default claimed a Zoom scheme with no handler configured" "$(<"$LOG")"
+ok
+
+# --- a configured handler claims only its own schemes -------------------------
+mkdir -p "$fake/home/.config/omarchy"
+cat >"$fake/home/.config/omarchy/browser-picker.json" <<'EOF'
+{
+  "handlers": [
+    { "id": "zoom", "schemes": ["zoommtg", "zoomus"], "launch": "app", "translate": "zoom" }
+  ]
+}
+EOF
+: >"$LOG"
+run "$plugin/bin/browser-picker" --set-default >/dev/null 2>&1
+grep -qxF 'xdg-mime default browser-picker.desktop x-scheme-handler/zoommtg' "$LOG" \
+  || fail "zoommtg was not claimed for the configured handler" "$(<"$LOG")"
+grep -qxF 'xdg-mime default browser-picker.desktop x-scheme-handler/zoomus' "$LOG" \
+  || fail "zoomus was not claimed for the configured handler" "$(<"$LOG")"
+grep -q 'xdg-mime default browser-picker.desktop x-scheme-handler/https' "$LOG" \
+  && fail "set-default claimed https through the handler path" "$(<"$LOG")"
+grep -q 'x-scheme-handler/zoommtg' "$fake/home/.local/share/applications/browser-picker.desktop" \
+  || fail "the installed desktop file does not advertise zoommtg" \
+       "$(grep MimeType= "$fake/home/.local/share/applications/browser-picker.desktop")"
+grep -qxF zoommtg "$support/claimed-schemes" \
+  || fail "claimed schemes were not recorded" "$(<"$support/claimed-schemes")"
+ok
+
+# --- taking the handler out releases the schemes ------------------------------
+printf '%s\n' '[Default Applications]' \
+  'x-scheme-handler/zoommtg=browser-picker.desktop' \
+  'x-scheme-handler/zoomus=browser-picker.desktop' \
+  'x-scheme-handler/mailto=thunderbird.desktop' \
+  >"$fake/home/.config/mimeapps.list"
+printf '%s\n' '{ "handlers": [] }' >"$fake/home/.config/omarchy/browser-picker.json"
+: >"$LOG"
+run "$plugin/bin/browser-picker" --set-default >/dev/null 2>&1
+grep -q 'xdg-mime default' "$LOG" \
+  && fail "an empty handlers list still claimed a scheme" "$(<"$LOG")"
+grep -q 'zoom' "$fake/home/.config/mimeapps.list" \
+  && fail "the Zoom schemes were not released" "$(<"$fake/home/.config/mimeapps.list")"
+grep -qxF 'x-scheme-handler/mailto=thunderbird.desktop' "$fake/home/.config/mimeapps.list" \
+  || fail "releasing Zoom schemes removed an unrelated handler" "$(<"$fake/home/.config/mimeapps.list")"
+ok
+
 # --- after removal, with a fallback on record ---------------------------------
 echo chromium.desktop >"$support/fallback"
 rm -rf "$plugin"
@@ -130,6 +176,19 @@ grep -q 'browser-picker' "$fake/home/.config/mimeapps.list" \
 grep -qxF 'x-scheme-handler/mailto=thunderbird.desktop' "$fake/home/.config/mimeapps.list" \
   || fail "the wrapper removed a line that was not its own" "$(<"$fake/home/.config/mimeapps.list")"
 grep -qxF 'xdg-open https://y.test guard=1' "$LOG" || fail "the link was not reopened" "$(<"$LOG")"
+ok
+
+# --- removal gives an opt-in scheme back as well ------------------------------
+printf '%s\n' zoommtg >"$support/claimed-schemes"
+printf '%s\n' '[Default Applications]' \
+  'x-scheme-handler/zoommtg=browser-picker.desktop' \
+  'x-scheme-handler/mailto=thunderbird.desktop' \
+  >"$fake/home/.config/mimeapps.list"
+run "$support/launch" 'zoommtg://zoom.us/join?confno=1' >/dev/null 2>&1
+grep -q zoommtg "$fake/home/.config/mimeapps.list" \
+  && fail "removal left zoommtg pointing at the picker" "$(<"$fake/home/.config/mimeapps.list")"
+grep -qxF 'x-scheme-handler/mailto=thunderbird.desktop' "$fake/home/.config/mimeapps.list" \
+  || fail "removal released a scheme it did not claim" "$(<"$fake/home/.config/mimeapps.list")"
 ok
 
 # --- a link that comes straight back stops instead of looping -----------------

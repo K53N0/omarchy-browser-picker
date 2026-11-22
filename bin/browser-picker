@@ -117,6 +117,18 @@ else
   outcome="links go to the next browser in line"
 fi
 command -v notify-send >/dev/null && notify-send "browser-picker" "The browser-picker plugin was removed — $outcome"
+# Schemes claimed for an opt-in handler (zoommtg, …) are not the web-browser
+# slot. Give those back too, or removing the plugin leaves meetings pointing here.
+if [[ -r $support/claimed-schemes && -f ${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list ]]; then
+  list="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
+  while IFS= read -r scheme; do
+    [[ $scheme =~ ^[a-zA-Z][a-zA-Z0-9+.-]*$ ]] || continue
+    grep -vxF -e "x-scheme-handler/${scheme}=browser-picker.desktop" \
+              -e "x-scheme-handler/${scheme}=browser-picker.desktop;" \
+              "$list" >"$list.bp" || true
+    mv "$list.bp" "$list"
+  done <"$support/claimed-schemes"
+fi
 for argument in "$@"; do
   [[ $argument == -* ]] && continue
   BROWSER_PICKER_FALLBACK=1 exec xdg-open "$argument"
@@ -131,6 +143,50 @@ WRAPPER
     # break the moment the plugin is removed.
     sed "s|@EXEC@|$support/launch|" "$HERE/../applications/$DESKTOP_ID" \
       >"$applications/$DESKTOP_ID" || die "could not write $applications/$DESKTOP_ID"
+
+    # Protocol schemes are opt-in. Claiming every scheme on the desktop file
+    # would take zoommtg:// away from the native Zoom client for anyone who
+    # only wanted a browser picker. A scheme is claimed only when a handler
+    # lists it. Schemes we claimed last time and no longer list are released.
+    # Same path Picker.qml reads. XDG_CONFIG_HOME is not consulted there.
+    config_file="$HOME/.config/omarchy/browser-picker.json"
+    handler_schemes=()
+    if [[ -r $config_file ]] && command -v jq >/dev/null; then
+      mapfile -t handler_schemes < <(jq -r '
+        [.handlers // [] | .[] | .schemes // [] | .[]] | unique | .[]
+      ' "$config_file" 2>/dev/null)
+    fi
+    mimeapps="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
+    if [[ -r $support/claimed-schemes && -f $mimeapps ]]; then
+      while IFS= read -r scheme; do
+        [[ $scheme =~ ^[a-zA-Z][a-zA-Z0-9+.-]*$ ]] || continue
+        still=false
+        for kept in ${handler_schemes+"${handler_schemes[@]}"}; do
+          [[ $kept == "$scheme" ]] && still=true
+        done
+        [[ $still == true ]] && continue
+        grep -vxF -e "x-scheme-handler/${scheme}=browser-picker.desktop" \
+                  -e "x-scheme-handler/${scheme}=browser-picker.desktop;" \
+                  "$mimeapps" >"$mimeapps.bp" || true
+        mv "$mimeapps.bp" "$mimeapps"
+      done <"$support/claimed-schemes"
+    fi
+    : >"$support/claimed-schemes"
+    if (( ${#handler_schemes[@]} > 0 )); then
+      extra=""
+      for scheme in "${handler_schemes[@]}"; do
+        [[ $scheme =~ ^[a-zA-Z][a-zA-Z0-9+.-]*$ ]] || continue
+        extra+="x-scheme-handler/${scheme};"
+        printf '%s\n' "$scheme" >>"$support/claimed-schemes"
+        if command -v xdg-mime >/dev/null; then
+          env -u BROWSER XDG_CURRENT_DESKTOP= xdg-mime default "$DESKTOP_ID" "x-scheme-handler/$scheme" 2>/dev/null || true
+        fi
+      done
+      if [[ -n $extra ]]; then
+        sed -i "s|^MimeType=|MimeType=${extra}|" "$applications/$DESKTOP_ID"
+      fi
+    fi
+
     command -v update-desktop-database >/dev/null && update-desktop-database "$applications" 2>/dev/null
     xdg_settings set default-web-browser "$DESKTOP_ID" \
       || die "xdg-settings refused $DESKTOP_ID"
@@ -203,16 +259,116 @@ ask_plugin() {
   run_argv "$selection"
 }
 
+# --- Scheme handlers (used by the fallback; the overlay uses Model.js) ------
+# The fallback never reaches QML, so it has to apply a handler itself. It
+# follows the same switch: an empty handlers list leaves the URL alone.
+
+# Same path Picker.qml reads. XDG_CONFIG_HOME is not consulted there.
+CONFIG_FILE="$HOME/.config/omarchy/browser-picker.json"
+
+scheme_of() {
+  local url=$1 scheme rest
+  [[ $url =~ ^([a-zA-Z][a-zA-Z0-9+.-]*): ]] || return 1
+  scheme=${BASH_REMATCH[1],,}
+  rest=${url#"${BASH_REMATCH[1]}":}
+  if [[ $rest == //* ]]; then
+    printf '%s' "$scheme"
+    return 0
+  fi
+  [[ ${rest:0:1} == [0-9] ]] && return 1
+  printf '%s' "$scheme"
+}
+
+is_zoom_meeting_url() {
+  local url=$1
+  [[ $url =~ ^zoom(mtg|us):// ]] && return 0
+  [[ $url =~ ^https?://([a-zA-Z0-9.-]+\.)?zoom\.us/(j|s|w|wc/join)/[0-9]+ ]]
+}
+
+translate_zoom() {
+  local url=$1 confno pwd
+  confno=$(sed -n 's/.*[?&]confno=\([^&]*\).*/\1/p' <<<"$url")
+  if [[ -z $confno && $url =~ /(j|s|w|wc/join)/([0-9]+) ]]; then
+    confno=${BASH_REMATCH[2]}
+  fi
+  if [[ -z $confno ]]; then
+    if [[ $url =~ ^zoom(mtg|us):// ]]; then
+      printf '%s' "https://app.zoom.us/wc/home"
+    else
+      printf '%s' "$url"
+    fi
+    return
+  fi
+  pwd=$(sed -n 's/.*[?&]pwd=\([^&#]*\).*/\1/p' <<<"$url")
+  if [[ -n $pwd ]]; then
+    printf '%s' "https://app.zoom.us/wc/join/$confno?pwd=$pwd"
+  else
+    printf '%s' "https://app.zoom.us/wc/join/$confno"
+  fi
+}
+
+handler_for_url() {
+  local url=$1 scheme config='{}' meeting=false
+  scheme=$(scheme_of "$url") || true
+  is_zoom_meeting_url "$url" && meeting=true
+  [[ -r $CONFIG_FILE ]] && config=$(<"$CONFIG_FILE")
+  jq -c --arg scheme "$scheme" --argjson meeting "$meeting" '
+    (.handlers // [])
+    | map(select(
+        ((.schemes // []) | index($scheme))
+        or ($meeting and .translate == "zoom")
+      ))
+    | .[0] // empty
+  ' <<<"$config" 2>/dev/null
+}
+
+apply_handler() { # sets launch; rewrites urls and scan
+  local handler=$1
+  launch=$(jq -r '.launch // "tab"' <<<"$handler")
+  if [[ $(jq -r '.translate // empty' <<<"$handler") == zoom ]]; then
+    local i
+    for i in "${!urls[@]}"; do
+      urls[$i]=$(translate_zoom "${urls[$i]}")
+    done
+  fi
+  scan=$(jq -c --argjson handler "$handler" '
+    . as $root
+    | ($root.entries
+        | map(select(.manage | not))
+        | if $handler.launch == "app" then map(select(.family == "chromium")) else . end) as $eligible
+    | (
+        if (($handler.entryIds // []) | length) > 0 then
+          [ $handler.entryIds[] as $id | $eligible[] | select(.id == $id) ]
+        else $eligible end
+      ) as $picked
+    | (if ($picked | length) > 0 then $picked else $eligible end) as $final
+    | $root + {entries:
+        if (($handler.label // "") | length) > 0 then
+          $final | map(.label = ($handler.label + " — " + ((.label / "—")[-1] | gsub("^\\s+"; ""))))
+        else $final end
+      }
+  ' <<<"$scan")
+}
+
 # --- Fallback: fzf in a floating foot ---------------------------------------
 # Only when omarchy-shell is not answering — a crash, a restart, a login where
 # the shell has not come up yet. The default browser is the worst thing to have
 # broken, so there is always a second way through. This path is deliberately
-# dumb: no ranking, no rules, no learning.
+# dumb: no ranking, no rules, no learning. A configured handler still filters
+# the list and launches with --app, because that path never reaches QML.
 fallback_pick() {
-  local scan labels choice line bin family profile manage argv=()
+  local scan labels choice line bin family profile manage argv=() launch=tab handler=""
   command -v fzf >/dev/null || die "omarchy-shell is not running and fzf is not installed"
 
   scan=$("$SCAN") || die "could not list browsers"
+
+  if (( ${#urls[@]} > 0 )); then
+    handler=$(handler_for_url "${urls[0]}")
+    if [[ -n $handler ]]; then
+      apply_handler "$handler"
+    fi
+  fi
+
   labels=$(jq -r '.entries[] | [.label, .bin, .family, .profile, (.manage|tostring)] | @tsv' <<<"$scan")
   [[ -n $labels ]] || die "no browsers found"
 
@@ -242,6 +398,11 @@ fallback_pick() {
   local window_flag_given=false
   for flag in ${flags+"${flags[@]}"}; do
     [[ $flag == "--new-window" || $flag == "--new-tab" ]] && window_flag_given=true
+    # --app already opens a dedicated window. A window flag next to it either
+    # no-ops or opens a second empty one.
+    if [[ $launch == app && ( $flag == "--new-window" || $flag == "--new-tab" ) ]]; then
+      continue
+    fi
     if [[ $family == firefox && ( $flag == "--incognito" || $flag == "--inprivate" ) ]]; then
       argv+=("--private-window")
     else
@@ -251,12 +412,15 @@ fallback_pick() {
   # The one setting the fallback honors. Rules and ranking need the shell, but
   # where the window opens is launch mechanics, and surprising the user least
   # matters most on the path that only runs when something else already broke.
-  if [[ $window_flag_given == false ]] \
-    && [[ $(jq -r '.settings.newWindow // false' "$HOME/.config/omarchy/browser-picker.json" 2>/dev/null) == true ]]; then
+  # An --app handler is already its own window, so the setting does not apply.
+  if [[ $launch != app && $window_flag_given == false ]] \
+    && [[ $(jq -r '.settings.newWindow // false' "$CONFIG_FILE" 2>/dev/null) == true ]]; then
     argv+=("--new-window")
   fi
   if [[ $manage == true ]]; then
     [[ $family == firefox ]] && argv+=("about:profiles") || argv+=("chrome://profile-picker")
+  elif [[ $launch == app && ${#urls[@]} -gt 0 ]]; then
+    argv+=("--app=${urls[0]}")
   else
     argv+=(${urls+"${urls[@]}"})
   fi
