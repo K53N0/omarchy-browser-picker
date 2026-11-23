@@ -105,7 +105,11 @@ function parseConfig(raw) {
       var pattern = stringValue(rule.pattern).trim().toLowerCase()
       var entryId = stringValue(rule.entryId).trim()
       if (!pattern || !entryId) continue
-      rules.push({ pattern: pattern, entryId: entryId, learned: rule.learned === true })
+      var parsedRule = { pattern: pattern, entryId: entryId, learned: rule.learned === true }
+      // Only "app" is a launch mode. Anything else is a normal window, and
+      // writing the field back out would turn a typo into configuration.
+      if (stringValue(rule.launch).trim().toLowerCase() === "app") parsedRule.launch = "app"
+      rules.push(parsedRule)
     }
   }
   return {
@@ -168,11 +172,32 @@ function removeRule(rules, pattern) {
   return (rules || []).filter(function (rule) { return rule.pattern !== needle })
 }
 
-function upsertRule(rules, pattern, entryId, learned) {
+function ruleByPattern(rules, pattern) {
+  var needle = stringValue(pattern).trim().toLowerCase()
+  var list = rules || []
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].pattern === needle) return list[i]
+  }
+  return null
+}
+
+// `launch` is optional. Omit it to keep an existing "app" mode when the
+// profile is reassigned. Pass "" to clear it. A learned rule does not pass
+// it, so Ctrl+Enter still creates an ordinary window rule.
+function upsertRule(rules, pattern, entryId, learned, launch) {
   var needle = stringValue(pattern).trim().toLowerCase()
   if (!needle || !entryId) return rules || []
+  var kept = ""
+  if (launch === undefined) {
+    var existing = ruleByPattern(rules, needle)
+    kept = existing && existing.launch === "app" ? "app" : ""
+  } else if (stringValue(launch).trim().toLowerCase() === "app") {
+    kept = "app"
+  }
   var next = removeRule(rules, needle)
-  next.push({ pattern: needle, entryId: stringValue(entryId), learned: learned === true })
+  var rule = { pattern: needle, entryId: stringValue(entryId), learned: learned === true }
+  if (kept === "app") rule.launch = "app"
+  next.push(rule)
   next.sort(function (a, b) { return a.pattern < b.pattern ? -1 : 1 })
   return next
 }
@@ -360,6 +385,17 @@ function entryById(entries, id) {
 
 var MANAGE_URL = { chromium: "chrome://profile-picker", firefox: "about:profiles" }
 
+// Chromium --app opens one URL in a webapp window. Firefox has no such flag,
+// and a manage row is a settings page. A spec that names an entryId applies
+// only to that profile, so choosing a different row from the list still opens
+// a normal window.
+function wantsAppLaunch(entry, spec) {
+  if (!entry || entry.manage || entry.family !== "chromium") return false
+  if (!spec || spec.launch !== "app") return false
+  if (spec.entryId && spec.entryId !== entry.id) return false
+  return true
+}
+
 // argv for one launch, without the binary. Kept here rather than in the shim
 // so the same rules are visible to the tests.
 //
@@ -367,7 +403,10 @@ var MANAGE_URL = { chromium: "chrome://profile-picker", firefox: "about:profiles
 // private flag by grepping the default browser's --help for MOZ_LOG and this
 // picker answers that probe with silence. Translating it for the Firefox family
 // is therefore not an edge case, it is the normal path.
-function launchArgs(entry, urls, flags, settings) {
+//
+// `rule` is the matched site rule, when there is one. launch "app" on that
+// rule opens the clicked URL with --app in the rule's Chromium profile.
+function launchArgs(entry, urls, flags, settings, rule) {
   var args = []
   if (!entry) return args
 
@@ -376,11 +415,18 @@ function launchArgs(entry, urls, flags, settings) {
     else args.push("--profile-directory=" + entry.profile)
   }
 
+  var appLaunch = wantsAppLaunch(entry, rule)
+
   var list = flags || []
   var windowFlagGiven = false
   for (var i = 0; i < list.length; i++) {
     var flag = list[i]
-    if (flag === "--new-window" || flag === "--new-tab") windowFlagGiven = true
+    if (flag === "--new-window" || flag === "--new-tab") {
+      windowFlagGiven = true
+      // --app already opens a dedicated window. A window flag next to it
+      // either no-ops or opens a second empty one.
+      if (appLaunch) continue
+    }
     if (entry.family === "firefox" && (flag === "--incognito" || flag === "--inprivate")) {
       args.push("--private-window")
     } else if (entry.family === "chromium" && flag === "--private-window") {
@@ -392,7 +438,9 @@ function launchArgs(entry, urls, flags, settings) {
 
   // Both families take --new-window. An explicit flag from the caller wins
   // over the setting, in either direction: whoever passed --new-tab meant it.
-  if (settings && settings.newWindow === true && !windowFlagGiven) {
+  // An --app window is already that dedicated window, so the setting does
+  // not apply there.
+  if (!appLaunch && settings && settings.newWindow === true && !windowFlagGiven) {
     args.push("--new-window")
   }
 
@@ -402,6 +450,10 @@ function launchArgs(entry, urls, flags, settings) {
   }
 
   var targets = urls || []
+  if (appLaunch) {
+    if (targets[0]) args.push("--app=" + targets[0])
+    return args
+  }
   for (var u = 0; u < targets.length; u++) args.push(targets[u])
   return args
 }
@@ -445,6 +497,8 @@ if (typeof module !== "undefined" && module.exports) {
     matchRule: matchRule,
     upsertRule: upsertRule,
     removeRule: removeRule,
+    ruleByPattern: ruleByPattern,
+    wantsAppLaunch: wantsAppLaunch,
     filterRules: filterRules,
     parseState: parseState,
     serializeState: serializeState,
