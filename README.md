@@ -88,6 +88,15 @@ A bare domain covers its subdomains, so `example.com` also matches
 `portal.example.com`. Write `*.example.com` to match the subdomains only. The
 most specific rule wins regardless of the order they appear in.
 
+`"launch": "app"` opens that site as a Chromium webapp. The clicked URL is
+passed as `--app=`, in the rule's profile, so a post opens in the app window
+rather than as a tab. Firefox has no `--app` flag, and choosing a different
+profile from the list opens a normal window. `--new-window` is left off,
+because the app window is already its own window. One URL is opened. Extra
+URLs in the same request are not. Editing the site or the profile in the
+rules window keeps the field. A rule learned with `Ctrl+Enter` does not set
+it. The shell-down fallback does not apply it either.
+
 The bar entry shows your most recent rules and a toggle to apply them
 automatically:
 
@@ -162,7 +171,8 @@ restart.
     "newWindow": false
   },
   "rules": [
-    { "pattern": "example.com", "entryId": "chromium:Profile 19", "learned": false }
+    { "pattern": "example.com", "entryId": "chromium:Profile 19", "learned": false },
+    { "pattern": "x.com", "entryId": "chromium:Profile 2", "launch": "app", "learned": false }
   ]
 }
 ```

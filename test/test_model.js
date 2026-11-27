@@ -80,6 +80,27 @@ test("upsertRule replaces rather than duplicates a pattern", () => {
   assert.equal(rules[0].learned, true)
 })
 
+test("launch app survives a profile reassignment and a config round trip", () => {
+  const config = M.parseConfig(JSON.stringify({ rules: [
+    { pattern: "x.com", entryId: "chromium:Profile 2", launch: "APP" },
+    { pattern: "Y.COM", entryId: "chromium:Profile 2", launch: "app" },
+    { pattern: "a.com", entryId: "chromium:Profile 2", launch: "window" }
+  ] }))
+  assert.equal(config.rules[0].launch, "app")
+  assert.equal(config.rules[1].pattern, "y.com")
+  assert.equal(config.rules[1].launch, "app")
+  assert.equal(config.rules[2].launch, undefined)
+
+  let rules = M.upsertRule(config.rules, "x.com", "chromium:Profile 1", false)
+  assert.equal(M.ruleByPattern(rules, "x.com").entryId, "chromium:Profile 1")
+  assert.equal(M.ruleByPattern(rules, "x.com").launch, "app")
+  rules = M.upsertRule(rules, "x.com", "chromium:Profile 1", false, "")
+  assert.equal(M.ruleByPattern(rules, "x.com").launch, undefined)
+
+  const again = M.parseConfig(M.serializeConfig({ settings: {}, rules: config.rules }))
+  assert.equal(M.ruleByPattern(again.rules, "x.com").launch, "app")
+})
+
 test("parseConfig drops malformed rules instead of throwing", () => {
   const config = M.parseConfig('{"rules":[{"pattern":"a.com","entryId":"x"},{"pattern":""},null,7]}')
   assert.equal(config.rules.length, 1)
@@ -250,6 +271,41 @@ test("newWindow is off unless set, and old callers are unaffected", () => {
 test("a manage row opens the profile screen and ignores the URL", () => {
   const args = M.launchArgs(ENTRIES[4], ["https://x.test"], [])
   assert.deepEqual(args, ["chrome://profile-picker"])
+})
+
+test("launch app opens the clicked url and skips window flags", () => {
+  const rule = { pattern: "x.com", entryId: ENTRIES[2].id, launch: "app" }
+  const settings = M.parseSettings({ newWindow: true })
+  assert.deepEqual(
+    M.launchArgs(
+      ENTRIES[2],
+      ["https://x.com/sean/status/1", "https://x.com/other"],
+      ["--new-window", "--incognito"],
+      settings,
+      null,
+      rule
+    ),
+    ["--profile-directory=Profile 19", "--incognito", "--app=https://x.com/sean/status/1"]
+  )
+})
+
+test("launch app stays on the rule's chromium profile", () => {
+  const rule = { pattern: "x.com", entryId: ENTRIES[2].id, launch: "app" }
+  const settings = M.parseSettings({ newWindow: true })
+  assert.deepEqual(
+    M.launchArgs(ENTRIES[0], ["https://x.com/a"], [], settings, null, rule),
+    ["--profile-directory=Default", "--new-window", "https://x.com/a"]
+  )
+  const firefoxRule = { pattern: "x.com", entryId: ENTRIES[3].id, launch: "app" }
+  assert.deepEqual(
+    M.launchArgs(ENTRIES[3], ["https://x.com/a"], [], settings, null, firefoxRule),
+    ["-P", "dev", "--new-window", "https://x.com/a"]
+  )
+  const manageRule = { pattern: "x.com", entryId: ENTRIES[4].id, launch: "app" }
+  assert.deepEqual(
+    M.launchArgs(ENTRIES[4], ["https://x.com/a"], [], null, null, manageRule),
+    ["chrome://profile-picker"]
+  )
 })
 
 // --------------------------------------------------------------- migration

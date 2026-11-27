@@ -182,7 +182,8 @@ Item {
       }
     }
 
-    var argv = entry ? [entry.bin].concat(Model.launchArgs(entry, urls, flags, config.settings, handler)) : []
+    var rule = host ? Model.matchRule(config.rules, host) : null
+    var argv = entry ? [entry.bin].concat(Model.launchArgs(entry, urls, flags, config.settings, handler, rule)) : []
     deliver(argv)
     opened = false
   }
@@ -224,9 +225,13 @@ Item {
   // "learned" means the picker offered it, and after a hand edit that is no
   // longer the story the list should tell.
   function applyRule(oldPattern, newPattern, entryId) {
+    // Renaming removes the old pattern before the insert, so the launch mode
+    // has to be copied across. A blank old pattern is a new rule.
+    var existing = Model.ruleByPattern(config.rules, oldPattern || newPattern)
+    var launch = existing && existing.launch === "app" ? "app" : ""
     var next = config.rules
     if (oldPattern && oldPattern !== newPattern) next = Model.removeRule(next, oldPattern)
-    next = Model.upsertRule(next, newPattern, entryId, false)
+    next = Model.upsertRule(next, newPattern, entryId, false, launch)
     config = Model.copyConfig(config, { rules: next })
     configFile.setText(Model.serializeConfig(config))
   }
