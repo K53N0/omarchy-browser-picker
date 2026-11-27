@@ -80,6 +80,27 @@ test("upsertRule replaces rather than duplicates a pattern", () => {
   assert.equal(rules[0].learned, true)
 })
 
+test("launch app survives a profile reassignment and a config round trip", () => {
+  const config = M.parseConfig(JSON.stringify({ rules: [
+    { pattern: "x.com", entryId: "chromium:Profile 2", launch: "APP" },
+    { pattern: "Y.COM", entryId: "chromium:Profile 2", launch: "app" },
+    { pattern: "a.com", entryId: "chromium:Profile 2", launch: "window" }
+  ] }))
+  assert.equal(config.rules[0].launch, "app")
+  assert.equal(config.rules[1].pattern, "y.com")
+  assert.equal(config.rules[1].launch, "app")
+  assert.equal(config.rules[2].launch, undefined)
+
+  let rules = M.upsertRule(config.rules, "x.com", "chromium:Profile 1", false)
+  assert.equal(M.ruleByPattern(rules, "x.com").entryId, "chromium:Profile 1")
+  assert.equal(M.ruleByPattern(rules, "x.com").launch, "app")
+  rules = M.upsertRule(rules, "x.com", "chromium:Profile 1", false, "")
+  assert.equal(M.ruleByPattern(rules, "x.com").launch, undefined)
+
+  const again = M.parseConfig(M.serializeConfig({ settings: {}, rules: config.rules }))
+  assert.equal(M.ruleByPattern(again.rules, "x.com").launch, "app")
+})
+
 test("parseConfig drops malformed rules instead of throwing", () => {
   const config = M.parseConfig('{"rules":[{"pattern":"a.com","entryId":"x"},{"pattern":""},null,7]}')
   assert.equal(config.rules.length, 1)
@@ -252,6 +273,41 @@ test("a manage row opens the profile screen and ignores the URL", () => {
   assert.deepEqual(args, ["chrome://profile-picker"])
 })
 
+test("launch app opens the clicked url and skips window flags", () => {
+  const rule = { pattern: "x.com", entryId: ENTRIES[2].id, launch: "app" }
+  const settings = M.parseSettings({ newWindow: true })
+  assert.deepEqual(
+    M.launchArgs(
+      ENTRIES[2],
+      ["https://x.com/sean/status/1", "https://x.com/other"],
+      ["--new-window", "--incognito"],
+      settings,
+      null,
+      rule
+    ),
+    ["--profile-directory=Profile 19", "--incognito", "--app=https://x.com/sean/status/1"]
+  )
+})
+
+test("launch app stays on the rule's chromium profile", () => {
+  const rule = { pattern: "x.com", entryId: ENTRIES[2].id, launch: "app" }
+  const settings = M.parseSettings({ newWindow: true })
+  assert.deepEqual(
+    M.launchArgs(ENTRIES[0], ["https://x.com/a"], [], settings, null, rule),
+    ["--profile-directory=Default", "--new-window", "https://x.com/a"]
+  )
+  const firefoxRule = { pattern: "x.com", entryId: ENTRIES[3].id, launch: "app" }
+  assert.deepEqual(
+    M.launchArgs(ENTRIES[3], ["https://x.com/a"], [], settings, null, firefoxRule),
+    ["-P", "dev", "--new-window", "https://x.com/a"]
+  )
+  const manageRule = { pattern: "x.com", entryId: ENTRIES[4].id, launch: "app" }
+  assert.deepEqual(
+    M.launchArgs(ENTRIES[4], ["https://x.com/a"], [], null, null, manageRule),
+    ["chrome://profile-picker"]
+  )
+})
+
 // --------------------------------------------------------------- migration
 
 test("the v2 bash rules file imports by label substring", () => {
@@ -301,6 +357,151 @@ test("a typed query outranks the generic pin", () => {
   ]
   const ranked = M.rankEntries(entries, M.parseState(""), M.parseConfig(""), "", "work", NOW)
   assert.equal(ranked[0].id, "chromium:Profile 19", "search relevance must win while typing")
+})
+
+// -------------------------------------------------------- scheme handlers
+
+test("schemeOf reads a URI scheme and rejects host:port", () => {
+  assert.equal(M.schemeOf("zoommtg://zoom.us/join?confno=1"), "zoommtg")
+  assert.equal(M.schemeOf("ZOOMUS://zoom.us/join"), "zoomus")
+  assert.equal(M.schemeOf("https://example.com"), "https")
+  assert.equal(M.schemeOf("mailto:a@b.test"), "mailto")
+  assert.equal(M.schemeOf("example.com:8443"), "")
+  assert.equal(M.schemeOf("not a url"), "")
+})
+
+test("translateZoomUrl builds the web client join URL", () => {
+  assert.equal(
+    M.translateZoomUrl("zoommtg://zoom.us/join?action=join&confno=123&pwd=secret"),
+    "https://app.zoom.us/wc/join/123?pwd=secret"
+  )
+  assert.equal(
+    M.translateZoomUrl("zoomus://zoom.us/join?confno=99"),
+    "https://app.zoom.us/wc/join/99"
+  )
+  assert.equal(M.translateZoomUrl("zoommtg://zoom.us/join"), "https://app.zoom.us/wc/home")
+  assert.equal(
+    M.translateZoomUrl("https://app.zoom.us/wc/join/123"),
+    "https://app.zoom.us/wc/join/123"
+  )
+})
+
+test("regional https join links are Zoom meetings, the homepage is not", () => {
+  const join = "https://us02web.zoom.us/j/82255158777?pwd=CrvXPMAt.1#success"
+  assert.equal(M.hostOf(join), "us02web.zoom.us")
+  assert.ok(M.isZoomHost("us02web.zoom.us"))
+  assert.ok(M.isZoomMeetingUrl(join))
+  assert.ok(M.isZoomMeetingUrl("zoommtg://us02web.zoom.us/join?confno=82255158777"))
+  assert.ok(!M.isZoomMeetingUrl("https://us02web.zoom.us/"))
+  assert.ok(!M.isZoomMeetingUrl("https://support.zoom.us/hc/en-us"))
+  assert.ok(!M.isZoomMeetingUrl("https://github.com/j/123"))
+  assert.equal(
+    M.translateZoomUrl(join),
+    "https://app.zoom.us/wc/join/82255158777?pwd=CrvXPMAt.1"
+  )
+})
+
+test("a missing handlers key still claims Zoom protocol links", () => {
+  const config = M.parseConfig("{}")
+  assert.equal(config.handlers.length, 1)
+  assert.equal(config.handlers[0].id, "zoom")
+  assert.deepEqual(config.handlers[0].schemes, ["zoommtg", "zoomus"])
+  assert.equal(config.handlers[0].launch, "app")
+  assert.equal(config.handlers[0].translate, "zoom")
+})
+
+test("an explicit empty handlers list turns the default off", () => {
+  const config = M.parseConfig(JSON.stringify({ handlers: [] }))
+  assert.equal(config.handlers.length, 0)
+})
+
+test("copyConfig keeps handlers when only the rules change", () => {
+  const config = M.parseConfig(JSON.stringify({
+    handlers: [{ id: "zoom", schemes: ["zoommtg"], launch: "app", entryIds: ["chromium:Profile 1"] }]
+  }))
+  const next = M.copyConfig(config, { rules: [{ pattern: "zoom", entryId: "chromium:Profile 1" }] })
+  assert.equal(next.handlers[0].entryIds[0], "chromium:Profile 1")
+  assert.equal(next.rules[0].pattern, "zoom")
+})
+
+test("prepareRequest translates Zoom and ranks against the handler id", () => {
+  const config = M.parseConfig("")
+  const prepared = M.prepareRequest(
+    ["zoommtg://zoom.us/join?confno=123&pwd=ab"],
+    config.handlers
+  )
+  assert.equal(prepared.handler.id, "zoom")
+  assert.equal(prepared.urls[0], "https://app.zoom.us/wc/join/123?pwd=ab")
+  assert.equal(prepared.host, "zoom")
+  assert.notEqual(prepared.host, "zoom.us")
+})
+
+test("https links are unchanged and still use the real host", () => {
+  const prepared = M.prepareRequest(["https://github.com/x"], M.parseConfig("").handlers)
+  assert.equal(prepared.handler, null)
+  assert.equal(prepared.urls[0], "https://github.com/x")
+  assert.equal(prepared.host, "github.com")
+})
+
+test("an https Zoom join link uses the Zoom handler, not the site host", () => {
+  const prepared = M.prepareRequest(
+    ["https://us02web.zoom.us/j/82255158777?pwd=abc"],
+    M.parseConfig("").handlers
+  )
+  assert.equal(prepared.handler.id, "zoom")
+  assert.equal(prepared.host, "zoom")
+  assert.equal(prepared.urls[0], "https://app.zoom.us/wc/join/82255158777?pwd=abc")
+})
+
+test("entriesForHandler keeps the named Chromium profiles and relabels them", () => {
+  const handler = M.parseHandler({
+    id: "zoom",
+    schemes: ["zoommtg"],
+    label: "Zoom",
+    launch: "app",
+    entryIds: ["chromium:Profile 1", "chromium:Default"]
+  })
+  const entries = [
+    { id: "chromium:Profile 2", label: "🧪  Chromium — Personal", family: "chromium", manage: false },
+    { id: "chromium:Profile 1", label: "🧪  Chromium — RoleModel", family: "chromium", manage: false },
+    { id: "chromium:Default", label: "🧪  Chromium — Simbiotrek", family: "chromium", manage: false },
+    { id: "firefox:dev", label: "🦊  Firefox — dev", family: "firefox", manage: false },
+    { id: "chromium:__manage__", label: "➕  Chromium — manage profiles", family: "chromium", manage: true }
+  ]
+  const shown = M.entriesForHandler(entries, handler)
+  assert.deepEqual(shown.map(e => e.id), ["chromium:Profile 1", "chromium:Default"])
+  assert.deepEqual(shown.map(e => e.label), ["Zoom — RoleModel", "Zoom — Simbiotrek"])
+})
+
+test("stale entryIds fall back to every Chromium profile", () => {
+  const handler = M.parseHandler({
+    id: "zoom", schemes: ["zoommtg"], launch: "app", entryIds: ["chromium:gone"]
+  })
+  const entries = [
+    { id: "chromium:Default", label: "🧪  Chromium — Simbiotrek", family: "chromium", manage: false },
+    { id: "firefox:dev", label: "🦊  Firefox — dev", family: "firefox", manage: false },
+    { id: "chromium:__manage__", label: "➕  manage", family: "chromium", manage: true }
+  ]
+  const shown = M.entriesForHandler(entries, handler)
+  assert.deepEqual(shown.map(e => e.id), ["chromium:Default"])
+})
+
+test("an --app handler launches with --app= and ignores newWindow", () => {
+  const handler = M.parseHandler({ id: "zoom", schemes: ["zoommtg"], launch: "app" })
+  const settings = M.parseSettings({ newWindow: true })
+  assert.deepEqual(
+    M.launchArgs(ENTRIES[0], ["https://app.zoom.us/wc/join/123"], ["--new-window"], settings, handler),
+    ["--profile-directory=Default", "--app=https://app.zoom.us/wc/join/123"]
+  )
+})
+
+test("a Zoom habit can become a rule without colliding with zoom.us", () => {
+  const config = M.parseConfig("")
+  let state = M.parseState("")
+  const entry = { id: "chromium:Profile 1", manage: false }
+  for (let i = 0; i < 3; i++) state = M.recordChoice(state, entry.id, "zoom", NOW)
+  assert.ok(M.shouldOfferRule(state, config, "zoom", entry, 3))
+  assert.equal(M.matchRule(config.rules, "zoom.us"), null)
 })
 
 console.log(`${passed} passed`)
